@@ -1,0 +1,24 @@
+[Unit]
+Description=Shaming AI blog backend (daily hot-list digest)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=blog
+Group=blog
+WorkingDirectory=/srv/shamingai.github.io.server
+EnvironmentFile=/srv/shamingai.github.io.server/.env
+ExecStart=/usr/bin/node --no-warnings src/cli.js serve
+Restart=on-failure
+RestartSec=10
+StateDirectory=shamingai-server
+# 数据库与日志写到 StateDirectory；如用默认 var/blog.db 请把 DB_PATH 设成 /var/lib/shamingai-server/blog.db
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/srv/shamingai.github.io.server /var/lib/shamingai-server
+
+[Install]
+WantedBy=multi-user.target
