@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { filterReachable } from "../../src/services/link-check.js";
 import { normalizeUrl } from "../../src/services/rank.js";
-import { parsePost, syncContent } from "../../src/services/sync.js";
+import { anchorOf, headingsOf, parsePost, syncContent } from "../../src/services/sync.js";
 import { all, get } from "../../src/db.js";
 import { createTestDatabase } from "../helpers.js";
 
@@ -70,23 +70,24 @@ test("syncContent replaces an article whose markdown changed", async () => {
   assert.equal((await get(db, "SELECT body FROM articles WHERE slug = 'rec-001'")).body, "改过的正文");
 });
 
-test("syncContent falls back to site-data.json for directives-free posts", async () => {
+test("headingsOf slugs anchors and numbers duplicate titles", () => {
+  assert.equal(anchorOf("3. HRV：被量化的心跳"), "3-hrv-被量化的心跳");
+  assert.equal(anchorOf("  Hello, World!  "), "hello-world");
+  assert.equal(anchorOf("!!!") , "section");
+  assert.deepEqual(headingsOf("## 第一节\n\n### 1. 甲\n\n## 第一节"), [
+    { level: 2, text: "第一节", anchor: "第一节" },
+    { level: 3, text: "1. 甲", anchor: "1-甲" },
+    { level: 2, text: "第一节", anchor: "第一节-2" }
+  ]);
+});
+
+test("syncContent takes category, date and tags from markdown directives only", async () => {
   const dir = await fixtureRepo();
-  await mkdir(path.join(dir, "site"), { recursive: true });
-  await writeFile(
-    path.join(dir, "site", "site-data.json"),
-    JSON.stringify({
-      articles: [
-        { id: "rec-001", summary: "旧摘要", category: "规格驱动开发", tags: ["规格驱动开发", "码云"], publishedOn: "2026-10-14" }
-      ]
-    })
-  );
   const db = await createTestDatabase();
-  await syncContent(db, dir, "2026-10-18T00:00:00.000Z");
-  await writeFile(path.join(dir, "blog", "content", "posts", "rec-001.md"), "推荐系统入门\n\n分类：SDD\n\n改过的正文");
+  await syncContent(db, dir);
   await writeFile(
-    path.join(dir, "blog", "content", "posts", "rec-002.md"),
-    "002. 什么是规格驱动开发\n\n分类：SDD\n\n规格驱动开发的重点。"
+    path.join(dir, "blog", "content", "posts", "rec-001.md"),
+    "推荐系统入门\n\ncategory: 规格驱动开发\ndate: 2026-10-14\ntags: 规格驱动开发, 码云\nsummary: 旧摘要\n\n改过的正文"
   );
   await syncContent(db, dir, "2026-10-18T00:00:00.000Z");
   const row = await get(db, "SELECT category_path, published_on, summary FROM articles WHERE slug = 'rec-001'");
@@ -98,6 +99,17 @@ test("syncContent falls back to site-data.json for directives-free posts", async
     (await all(db, "SELECT name FROM article_tags WHERE slug = 'rec-001' ORDER BY position")).map((tag) => tag.name),
     ["规格驱动开发", "码云"]
   );
+});
+
+test("syncContent ignores the inline 分类 line and leaves directives-free posts untagged", async () => {
+  const dir = await fixtureRepo();
+  const db = await createTestDatabase();
+  await syncContent(db, dir);
+  await writeFile(
+    path.join(dir, "blog", "content", "posts", "rec-002.md"),
+    "002. 什么是规格驱动开发\n\n分类：SDD\n\n规格驱动开发的重点。"
+  );
+  await syncContent(db, dir, "2026-10-18T00:00:00.000Z");
   const bare = await get(db, "SELECT category_path, published_on, summary FROM articles WHERE slug = 'rec-002'");
   assert.deepEqual({ ...bare }, { category_path: null, published_on: "2026-10-18", summary: "分类：SDD" });
 });

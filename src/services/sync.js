@@ -7,7 +7,6 @@ const DIGEST_PREFIX = "daily-";
 export async function readContentDir(siteRepoDir) {
   const contentDir = path.join(siteRepoDir, "blog", "content");
   const site = JSON.parse(await readFile(path.join(contentDir, "site.json"), "utf8"));
-  const index = await readSiteDataIndex(siteRepoDir);
   const postsDir = path.join(contentDir, "posts");
   const names = (await readdir(postsDir).catch((error) => {
     if (error.code === "ENOENT") return [];
@@ -19,16 +18,7 @@ export async function readContentDir(siteRepoDir) {
       text: await readFile(path.join(postsDir, name), "utf8")
     }))
   );
-  return { site, index, posts };
-}
-
-async function readSiteDataIndex(siteRepoDir) {
-  const raw = await readFile(path.join(siteRepoDir, "site", "site-data.json"), "utf8").catch((error) => {
-    if (error.code === "ENOENT") return null;
-    throw error;
-  });
-  if (!raw) return new Map();
-  return new Map((JSON.parse(raw).articles ?? []).map((article) => [article.id, article]));
+  return { site, posts };
 }
 
 export function parsePost(id, text) {
@@ -55,12 +45,27 @@ export function parsePost(id, text) {
   };
 }
 
+// 锚点与前端 contentBlocks 用同一规则（tests/unit/sync.test.js 与 blog/app/tests/article-page.test.js 各钉了一份）：
+// 转小写，非字母数字的连续片段折成 "-"。中文按字母处理会原样保留，标题 "3. HRV：…" 得到 "hrv" 这样的合法 id。
+export function anchorOf(text) {
+  return String(text ?? "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "") || "section";
+}
+
 export function headingsOf(body) {
+  const seen = new Map();
   return String(body ?? "")
     .split(/\r?\n/)
     .map((line) => /^(#{2,6})\s+(\S.*?)\s*$/.exec(line))
     .filter(Boolean)
-    .map((match) => ({ level: match[1].length, text: match[2], anchor: match[2] }));
+    .map((match) => {
+      const base = anchorOf(match[2]);
+      const count = seen.get(base) ?? 0;
+      seen.set(base, count + 1);
+      return { level: match[1].length, text: match[2], anchor: count ? `${base}-${count + 1}` : base };
+    });
 }
 
 export function firstParagraph(body) {
@@ -142,13 +147,13 @@ async function upsertArticle(db, article, now) {
 
 export async function syncContent(db, siteRepoDir, now = new Date().toISOString()) {
   if (!siteRepoDir) throw new Error("SITE_REPO_DIR 未配置");
-  const { site, index, posts } = await readContentDir(siteRepoDir);
+  const { site, posts } = await readContentDir(siteRepoDir);
+  const syncedOn = todayInShanghai(new Date(now));
   return transaction(db, async (db) => {
     const fromRepository = new Set();
     for (const raw of posts) {
       const post = parsePost(raw.id, raw.text);
-      const fallback = index.get(post.slug);
-      const summary = post.directives.summary ?? fallback?.summary ?? summaryOf(post.body);
+      const summary = post.directives.summary ?? summaryOf(post.body);
       await upsertArticle(
         db,
         {
@@ -156,11 +161,13 @@ export async function syncContent(db, siteRepoDir, now = new Date().toISOString(
           kind: post.kind,
           title: post.title,
           summary,
-          summaryGenerated: post.directives.summary || fallback?.summary ? 0 : 1,
+          summaryGenerated: post.directives.summary ? 0 : 1,
           body: post.body,
-          category: post.directives.category ?? fallback?.category ?? (post.kind === "digest" ? "资讯" : null),
-          publishedOn: post.directives.date ?? fallback?.publishedOn ?? todayInShanghai(),
-          tags: tagsOf(post).length > 0 ? tagsOf(post) : fallback?.tags ?? []
+          category: post.directives.category ?? (post.kind === "digest" ? "资讯" : null),
+          publishedOn: post.directives.date ?? syncedOn,
+          tags: post.directives.tags
+            ? post.directives.tags.split(/[,，、·]/).map((tag) => tag.trim()).filter(Boolean)
+            : tagsOf(post)
         },
         now
       );
