@@ -2,7 +2,7 @@ import { loadEnv } from "./config.js";
 import { closeDatabase, migrate } from "./db.js";
 import { GenerateError, generateDigest, getRun } from "./services/digest.js";
 import { syncContent, todayInShanghai } from "./services/sync.js";
-import { seedSites } from "./sources/index.js";
+import { seedSites, upgradeSiteUrls } from "./sources/index.js";
 
 const USAGE = `用法：node src/cli.js <命令> [选项]
 
@@ -55,8 +55,9 @@ async function main() {
       case "migrate": {
         const applied = await migrate(db);
         const seeded = await seedSites(db);
+        const upgraded = await upgradeSiteUrls(db);
         process.stdout.write(
-          `数据库：${config.database.profile}/${config.database.driver}；已应用迁移：${applied.join("、") || "（无新增）"}；新增来源站点：${seeded}\n`
+          `数据库：${config.database.profile}/${config.database.driver}；已应用迁移：${applied.join("、") || "（无新增）"}；新增来源站点：${seeded}；升级来源地址：${upgraded}\n`
         );
         break;
       }

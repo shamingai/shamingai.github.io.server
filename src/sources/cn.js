@@ -51,8 +51,22 @@ function toutiaoHotBoard({ json, site }) {
   return toCandidates(items, site);
 }
 
+function tophubWeibo({ $, site }) {
+  const items = [];
+  $("table.table tr").each((_index, row) => {
+    const cells = $(row).children("td");
+    const link = cells.eq(1).find("a[href]").first();
+    const title = link.text().replace(/\s+/g, " ").trim();
+    const href = link.attr("href");
+    if (!title || !href) return;
+    items.push({ title, url: href, excerpt: cells.eq(2).text().trim() });
+  });
+  return toCandidates(items, site);
+}
+
 export const adapters = {
   "weibo-hot-search": async (ctx) => weiboHotSearch(ctx),
   "zhihu-hot-list": async (ctx) => zhihuHotList(ctx),
-  "toutiao-hot-board": async (ctx) => toutiaoHotBoard(ctx)
+  "toutiao-hot-board": async (ctx) => toutiaoHotBoard(ctx),
+  "tophub-hot": async (ctx) => tophubWeibo(ctx)
 };

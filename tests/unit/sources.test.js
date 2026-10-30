@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as cheerio from "cheerio";
 import { adapters } from "../../src/sources/generic.js";
 import { linksFrom } from "../../src/sources/generic.js";
-import { seedSites } from "../../src/sources/index.js";
+import { DEFAULT_SITES, seedSites, upgradeSiteUrls } from "../../src/sources/index.js";
 import { all, run as query } from "../../src/db.js";
 import { createTestDatabase } from "../helpers.js";
 
@@ -42,6 +42,33 @@ test("sspai adapter keeps only long titles and drops duplicates", async () => {
   assert.deepEqual(items.map((item) => item.url), ["https://alpha.test/post/1"]);
 });
 
+test("baidu adapter reads the board JSON API", async () => {
+  const json = {
+    data: {
+      cards: [
+        {
+          content: [
+            {
+              content: [
+                { word: "置顶条目", url: "https://m.baidu.com/s?word=a", isTop: true },
+                { word: "热榜条目", url: "https://m.baidu.com/s?word=b", index: 1 }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  };
+  const items = await adapters["baidu-board"]({ site, text: "", json, $: cheerio.load("") });
+  assert.deepEqual(
+    items.map((item) => [item.title, item.url, item.siteRank]),
+    [
+      ["置顶条目", "https://m.baidu.com/s?word=a", 1],
+      ["热榜条目", "https://m.baidu.com/s?word=b", 2]
+    ]
+  );
+});
+
 test("baidu adapter reads title, link and description", async () => {
   const html = `
     <div class="category-wrap"><div class="category-wrap-i1"><div class="item-1">
@@ -54,6 +81,30 @@ test("baidu adapter reads title, link and description", async () => {
   assert.equal(items[0].title, "甲站头条热点");
   assert.equal(items[0].url, "https://news.test/1");
   assert.equal(items[0].excerpt, "说明文字");
+});
+
+test("upgradeSiteUrls replaces retired hot-list urls once", async () => {
+  const db = await createTestDatabase();
+  const sites = DEFAULT_SITES;
+  await query(
+    db,
+    "INSERT INTO source_sites (id, name, home_url, hot_list_url, adapter, weight, max_candidates, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 20, 1, ?, ?)",
+    ["zhihu-hot", "知乎热榜", "https://www.zhihu.com/", "https://www.zhihu.com/api/v3/feed/topstory/hot-lists/total?limit=50", "zhihu-hot-list", "2026-10-01T00:00:00Z", "2026-10-01T00:00:00Z"]
+  );
+  await query(
+    db,
+    "INSERT INTO source_sites (id, name, home_url, hot_list_url, adapter, weight, max_candidates, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 20, 1, ?, ?)",
+    ["custom-hot", "自定义", "https://custom.test/", "https://custom.test/hot", "links", "2026-10-01T00:00:00Z", "2026-10-01T00:00:00Z"]
+  );
+  assert.equal(await upgradeSiteUrls(db, sites), 1);
+  const [row] = await all(db, "SELECT hot_list_url FROM source_sites WHERE id = ?", ["zhihu-hot"]);
+  assert.equal(row.hot_list_url, "https://api.zhihu.com/topstory/hot-list?limit=50");
+  // 标记写入后即使有人手动改回旧地址也不再覆盖。
+  await query(db, "UPDATE source_sites SET hot_list_url = ? WHERE id = ?", ["https://example.test/old", "zhihu-hot"]);
+  assert.equal(await upgradeSiteUrls(db, sites), 0);
+  const [again] = await all(db, "SELECT hot_list_url FROM source_sites WHERE id = ?", ["zhihu-hot"]);
+  assert.equal(again.hot_list_url, "https://example.test/old");
+  db.raw.close();
 });
 
 test("seedSites leaves existing rows alone when run twice", async () => {

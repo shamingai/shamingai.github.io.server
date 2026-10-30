@@ -12,7 +12,17 @@ export function linksFrom($, itemSelector, linkSelector) {
   return items;
 }
 
-function baiduBoard({ $, site }) {
+function baiduBoard({ $, json, site }) {
+  const cards = json?.data?.cards;
+  if (Array.isArray(cards)) {
+    const items = cards.flatMap((card) => card?.content?.[0]?.content ?? card?.content ?? []);
+    return toCandidates(
+      items
+        .filter((entry) => entry?.word && entry?.url)
+        .map((entry) => ({ title: entry.word, url: entry.url, excerpt: entry.desc ?? "" })),
+      site
+    );
+  }
   const items = [];
   $("[class*='category-wrap'] [class*='item-']").each((_index, element) => {
     const card = $(element);

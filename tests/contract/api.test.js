@@ -4,7 +4,7 @@ import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { get, run } from "../../src/db.js";
-import { createTestApp, createTestDatabase, seedSamples } from "../helpers.js";
+import { createTestApp, createTestDatabase, insertArticle, seedSamples } from "../helpers.js";
 import { seedSites } from "../../src/sources/index.js";
 import { GenerateError } from "../../src/services/digest.js";
 
@@ -32,6 +32,15 @@ async function digestFixture() {
     `INSERT INTO picked_items (digest_date, rank_no, url, title, site_id, site_name, site_rank, mention_count, summary, reason, published_at)
     VALUES ('2026-10-18', 2, 'https://beta.test/2', '乙站第二条', 'beta', '乙站', 2, 1, '摘要二', '理由二', '2026-10-18T01:00:00.000Z')`
   );
+  await insertArticle(db, {
+    slug: "daily-2026-10-18",
+    kind: "digest",
+    title: "2026-10-18 资讯",
+    summary: "今日热门前十",
+    body: "## 今日热门前十\n\n资讯正文。",
+    category: "资讯",
+    publishedOn: "2026-10-18"
+  });
   return { db, siteRepoDir };
 }
 
@@ -92,11 +101,13 @@ test("GET /api/posts returns the documented envelope and pages newest first", as
   const response = await app.inject({ method: "GET", url: "/api/posts?page=1&page_size=2" });
   assert.equal(response.statusCode, 200);
   const body = response.json();
-  assert.equal(body.total, 3);
+  assert.equal(body.total, 4);
   assert.equal(body.page, 1);
   assert.equal(body.page_size, 2);
-  assert.deepEqual(body.items.map((item) => item.slug), ["rec-001", "rec-002"]);
-  const [first] = body.items;
+  assert.equal(body.page_count, 2);
+  assert.deepEqual(body.items.map((item) => item.slug), ["daily-2026-10-18", "rec-001"]);
+  assert.equal(body.items[0].kind, "digest", "同一天既要有资讯也要有文章");
+  const first = body.items[1];
   assert.deepEqual(Object.keys(first), [
     "slug", "kind", "title", "summary", "summary_generated", "category_path", "published_on",
     "word_count", "reading_minutes", "tags"
@@ -106,11 +117,18 @@ test("GET /api/posts returns the documented envelope and pages newest first", as
   assert.deepEqual(first.tags, ["推荐系统", "入门"]);
 
   const second = (await app.inject({ method: "GET", url: "/api/posts?page=2&page_size=2" })).json();
-  assert.deepEqual(second.items.map((item) => item.slug), ["life-001"]);
+  assert.deepEqual(second.items.map((item) => item.slug), ["rec-002", "life-001"]);
+  assert.equal(second.page_count, 2);
+
+  const posts = (await app.inject({ method: "GET", url: "/api/posts?kind=post" })).json();
+  assert.deepEqual(posts.items.map((item) => item.slug), ["rec-001", "rec-002", "life-001"]);
+  assert.equal(posts.total, 3);
+  const digests = (await app.inject({ method: "GET", url: "/api/posts?kind=digest" })).json();
+  assert.deepEqual(digests.items.map((item) => item.slug), ["daily-2026-10-18"]);
   await app.close();
 });
 
-test("GET /api/posts rejects invalid pagination", async () => {
+test("GET /api/posts rejects invalid pagination and kind", async () => {
   const { db } = await digestFixture();
   const { app } = await createTestApp({ db });
   for (const query of ["page=0", "page=abc", "page_size=0", "page_size=101"]) {
@@ -119,6 +137,9 @@ test("GET /api/posts rejects invalid pagination", async () => {
     assert.match(response.json().error.code, /^invalid_page/, query);
     assert.equal(typeof response.json().error.message, "string");
   }
+  const badKind = await app.inject({ method: "GET", url: "/api/posts?kind=news" });
+  assert.equal(badKind.statusCode, 400);
+  assert.equal(badKind.json().error.code, "invalid_kind");
   await app.close();
 });
 

@@ -106,8 +106,12 @@ export function loadConfig(env = process.env) {
   };
 }
 
-export function loadEnv(envFile = path.join(ROOT, ".env")) {
-  const local = readEnvFile(envFile);
-  const overlay = readEnvFile(path.join(ROOT, `.env.${process.env.DB_PROFILE || "test"}`));
-  return loadConfig({ ...local, ...overlay, ...process.env });
+export function loadEnv(envFile, environ = process.env) {
+  const { ENV_FILE, ...overrides } = environ;
+  const file = envFile ?? (ENV_FILE ? absolute(ENV_FILE) : path.join(ROOT, ".env"));
+  const local = readEnvFile(file);
+  // 只有显式设置 DB_PROFILE 时才叠加对应环境文件；默认用 test，避免误操作生产库。
+  const profile = overrides.DB_PROFILE || local.DB_PROFILE || "test";
+  const overlay = readEnvFile(path.join(path.dirname(file), `.env.${profile}`));
+  return loadConfig({ ...local, ...overlay, ...overrides, DB_PROFILE: profile });
 }

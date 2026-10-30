@@ -1,5 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { all, openDatabase, run } from "../../src/db.js";
 import { createTestDatabase } from "../helpers.js";
 
@@ -85,4 +90,44 @@ test("DB_PROFILE switches between the test and prod MySQL settings", async () =>
   assert.equal(fallback.sqlitePath, "/tmp/blog.db");
 
   assert.throws(() => loadConfig({ DB_PROFILE: "staging" }), /DB_PROFILE/);
+});
+
+test("loadEnv reads the profile overlay from the env file's own directory", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cfg-"));
+  await writeFile(path.join(dir, ".env"), "DB_PROFILE=test\nMYSQL_TEST_HOST=127.0.0.1\nMYSQL_TEST_USER=blog\nMYSQL_TEST_PASSWORD=a\n");
+  await writeFile(path.join(dir, ".env.test"), "DB_PATH=/tmp/from-test-overlay.db\n");
+  await writeFile(path.join(dir, ".env.prod"), "DB_PATH=/tmp/from-prod-overlay.db\n");
+  const { loadEnv } = await import("../../src/config.js");
+
+  const local = loadEnv(path.join(dir, ".env"), {});
+  assert.equal(local.database.profile, "test");
+  assert.equal(local.database.driver, "mysql");
+  assert.equal(local.database.sqlitePath, "/tmp/from-test-overlay.db");
+
+  const forced = loadEnv(path.join(dir, ".env"), { DB_PROFILE: "prod", MYSQL_PROD_HOST: "10.0.0.1", MYSQL_PROD_USER: "prod" });
+  assert.equal(forced.database.profile, "prod");
+  assert.equal(forced.database.sqlitePath, "/tmp/from-prod-overlay.db");
+
+  const overridden = loadEnv(path.join(dir, ".env"), { DB_PROFILE: "test", DB_PATH: "/tmp/from-shell.db" });
+  assert.equal(overridden.database.sqlitePath, "/tmp/from-shell.db");
+});
+
+test("cli honours ENV_FILE so a second config directory is not overlaid by the real one", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "cfg-root-"));
+  const scratch = await mkdtemp(path.join(tmpdir(), "cfg-scratch-"));
+  await writeFile(path.join(root, ".env"), "PORT=8787\n");
+  await writeFile(path.join(root, ".env.test"), "PORT=8787\nSCHEDULER=on\n");
+  await writeFile(path.join(scratch, ".env"), "PORT=8788\n");
+  await writeFile(path.join(scratch, ".env.test"), "SCHEDULER=off\n");
+  const { loadConfig } = await import("../../src/config.js");
+
+  assert.equal(loadConfig({ ENV_FILE: path.join(scratch, ".env"), PORT: "8787" }).port, 8787);
+
+  const cli = spawnSync(process.execPath, ["--no-warnings", "-e", "import('./src/config.js').then(({ loadEnv }) => console.log(JSON.stringify({ port: loadEnv().port, scheduler: loadEnv().schedule.enabled })))"], {
+    cwd: fileURLToPath(new URL("../../", import.meta.url)),
+    env: { PATH: process.env.PATH, ENV_FILE: path.join(scratch, ".env") },
+    encoding: "utf8"
+  });
+  assert.equal(cli.status, 0, cli.stderr);
+  assert.deepEqual(JSON.parse(cli.stdout), { port: 8788, scheduler: false });
 });

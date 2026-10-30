@@ -5,7 +5,7 @@ import { createOpenAiClient, editCandidate, limitText } from "../llm/client.js";
 import { collectAll, enabledSites } from "./collect.js";
 import { filterReachable } from "./link-check.js";
 import { mergeCandidates } from "./rank.js";
-import { headingsOf } from "./sync.js";
+import { headingsOf, todayInShanghai } from "./sync.js";
 import { DIGEST_CATEGORY, DIGEST_TAG, digestSlug, digestSummary, digestTitle, renderDigest } from "./render.js";
 
 export class GenerateError extends Error {
@@ -33,7 +33,12 @@ function defaultDeps(config) {
     collect: (sites, options) => collectAll(sites, { ...config.collection, ...options }),
     fetch: globalThis.fetch,
     linkCheck: { fetch: globalThis.fetch, timeoutMs: config.linkCheck?.timeoutMs ?? 8000 },
-    llm: createOpenAiClient(llm)
+    llm: createOpenAiClient(llm),
+    log: (level, message) => {
+      const line = `[digest] ${message}`;
+      if (level === "warn") console.warn(line);
+      else console.log(line);
+    }
   };
 }
 
@@ -76,7 +81,7 @@ export async function digestExists(db, date) {
 }
 
 export async function generateDigest(db, config, { deps: overrides, ...options }) {
-  const { date, regenerate = false, dryRun = false, kind = "manual", now = new Date() } = options;
+  const { date = todayInShanghai(), regenerate = false, dryRun = false, kind = "manual", now = new Date() } = options;
   const deps = { ...defaultDeps(config), ...(overrides ?? {}) };
   const startedAt = now.toISOString();
   const runId = await startRun(db, regenerate ? "regenerate" : kind, startedAt);
@@ -98,8 +103,12 @@ export async function generateDigest(db, config, { deps: overrides, ...options }
       site_id: result.site_id,
       status: result.status,
       collected: result.collected,
-      error: result.error ?? null
+      error: result.error ?? null,
+      hot_list_url: result.hot_list_url ?? null
     }));
+    for (const result of report.site_results.filter((item) => item.status === "failed")) {
+      deps.log?.("warn", `来源站点 ${result.site_id} 采集失败：${result.error ?? "未知原因"}`);
+    }
     const live = collected.map((result) => ({ ...result, site_name: sites.find((site) => site.id === result.site_id)?.name }));
 
     const ranked = mergeCandidates(live, weights);
@@ -255,10 +264,12 @@ export async function upsertDigestArticle(db, { date, title, summary, body, upda
 function describeShortfall(report) {
   const failed = report.site_results.filter((result) => result.status === "failed");
   const parts = [];
-  if (failed.length) parts.push(`${failed.length} 个站点采集失败（${failed.map((item) => item.site_id).join("、")}）`);
+  if (failed.length) {
+    parts.push(`${failed.length} 个站点采集失败（${failed.map((item) => item.site_id).join("、")}），请检查来源地址是否仍可访问`);
+  }
   if (report.dropped.length) parts.push(`${report.dropped.length} 条未通过内容校验或链接检查`);
-  if (!parts.length) parts.push("可用热点不足十条");
-  return parts.join("，");
+  if (!parts.length) parts.push("可用热点不足十条，可启用更多来源站点后重新生成");
+  return parts.join("；");
 }
 
 export async function readDigestMarkdown(config, date) {

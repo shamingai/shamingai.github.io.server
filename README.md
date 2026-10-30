@@ -82,7 +82,7 @@ npm run generate -- --date 2026-10-18 --dry-run   # 纯预览：不写数据库�
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/health` | `{status, db, content_dir, details, last_sync_at}`；`db` 或 `content_dir` 不是 `ok` 时整体 `degraded` 并返回 503 |
-| GET | `/api/posts?page=&page_size=` | 文章分页（默认 10，最大 100），`{items, total, page, page_size}` |
+| GET | `/api/posts?page=&page_size=&kind=` | 文章分页（默认 10，最大 100），`{items, total, page, page_size, page_count}`；`kind` 取 `all`（默认，资讯与文章按日期混排）、`post`、`digest`，其他值 400 `invalid_kind` |
 | GET | `/api/posts/:slug` | 正文 Markdown、标题锚点、上一篇/下一篇 |
 | GET | `/api/archive`、`/api/categories`、`/api/categories/:path/posts` | 归档与分类 |
 | GET | `/api/tags`、`/api/tags/:name/posts` | 标签 |

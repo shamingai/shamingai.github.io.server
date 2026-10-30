@@ -60,7 +60,18 @@ async function listItem(db, row) {
   };
 }
 
-function orderedRows(db) {
+function orderedRows(db, kind = null) {
+  if (kind) {
+    return all(
+      db,
+      `SELECT slug, kind, title, summary, summary_generated, category_path, published_on,
+              word_count, reading_minutes
+         FROM articles
+        WHERE kind = ?
+        ORDER BY published_on DESC, slug DESC`,
+      [kind]
+    );
+  }
   return all(
     db,
     `SELECT slug, kind, title, summary, summary_generated, category_path, published_on,
@@ -70,18 +81,82 @@ function orderedRows(db) {
   );
 }
 
-async function orderedSlugs(db) {
-  return (await orderedRows(db)).map((row) => row.slug);
+async function orderedSlugs(db, kind = null) {
+  return (await orderedRows(db, kind)).map((row) => row.slug);
 }
 
 async function pageOf(db, slugs, { page, pageSize }) {
   const start = (page - 1) * pageSize;
   const slice = slugs.slice(start, start + pageSize);
-  return { items: await articlesByIds(db, slice), total: slugs.length, page, page_size: pageSize };
+  return {
+    items: await articlesByIds(db, slice),
+    total: slugs.length,
+    page,
+    page_size: pageSize,
+    page_count: Math.max(1, Math.ceil(slugs.length / pageSize))
+  };
 }
 
+const POST_KINDS = new Set(["all", "post", "digest"]);
+
+export function readKind(query = {}) {
+  const kind = query.kind === undefined || query.kind === "" ? "all" : String(query.kind);
+  if (!POST_KINDS.has(kind)) throw badRequest("invalid_kind", "kind 只能是 all、post 或 digest");
+  return kind;
+}
+
+// 首页是否同时展示资讯与文章，取决于资讯在全部内容里的占比：
+// 今天刚开始写日记时，资讯只占首页少数位置；资讯归档多起来，它就自然回到按日期混排。
+// 向上取整保证首页上资讯只要存在就至少有一个位置；资讯占比超过 3/4 时它会占一半。
+export function digestQuota(digestCount, postCount, pageSize) {
+  if (digestCount === 0) return 0;
+  if (postCount === 0) return pageSize;
+  const share = Math.ceil((pageSize * digestCount) / (digestCount + postCount));
+  return Math.min(Math.max(1, share), Math.floor(pageSize / 2));
+}
+
+export function interleaveByDate(rows, pageSize) {
+  const pools = {
+    digest: rows.filter((row) => row.kind === "digest"),
+    post: rows.filter((row) => row.kind !== "digest")
+  };
+  const quota = digestQuota(pools.digest.length, pools.post.length, pageSize);
+  const taken = { digest: 0, post: 0 };
+  const picked = [];
+  const head = (side) => pools[side][taken[side]];
+  while (taken.digest < pools.digest.length || taken.post < pools.post.length) {
+    if (taken.post >= pools.post.length) {
+      picked.push(head("digest"));
+      taken.digest += 1;
+      continue;
+    }
+    if (taken.digest >= pools.digest.length) {
+      picked.push(head("post"));
+      taken.post += 1;
+      continue;
+    }
+    const position = picked.length + 1;
+    const digestQuotaSoFar = Math.min(quota, Math.round((position * quota) / pageSize));
+    // 日期更近的一侧先出；只有资讯还欠配额时才让文章顶上去。
+    const front = head("digest").published_on >= head("post").published_on ? "digest" : "post";
+    // 资讯的日期比下一次配额节拍还近时提前放出，保证它和同一天的文章挨在一起。
+    const nextBeat = Math.round(((position + 1) * quota) / pageSize);
+    const digestDue = taken.digest >= digestQuotaSoFar && nextBeat > digestQuotaSoFar;
+    const side = front === "digest" && !digestDue ? "digest" : "post";
+    picked.push(head(side));
+    taken[side] += 1;
+  }
+  return picked;
+}
+
+// 首页列表：资讯博客和其他文章都进入列表，按日期和份额混排。
+// 只按日期排时，每日资讯永远最新，会把首页整页占满，用户就“只看到资讯、看不到文章”。
 export async function listPosts(db, query) {
-  return pageOf(db, await orderedSlugs(db), paging(query));
+  const { page, pageSize } = paging(query);
+  const kind = readKind(query);
+  const rows = await orderedRows(db, kind === "all" ? null : kind);
+  const ordered = kind === "all" ? interleaveByDate(rows, pageSize) : rows;
+  return pageOf(db, ordered.map((row) => row.slug), { page, pageSize });
 }
 
 export async function neighborOf(db, slug) {

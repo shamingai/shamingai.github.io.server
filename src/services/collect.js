@@ -24,11 +24,17 @@ function describe(error) {
   return error?.message || String(error);
 }
 
+function failure(message, url) {
+  const error = new Error(message);
+  error.url = url;
+  return error;
+}
+
 export async function collectSite(site, options = {}) {
   const fetchImpl = options.fetch ?? globalThis.fetch;
   const adapter = adapterOf(site.adapter);
   if (!adapter) {
-    return { site_id: site.id, status: "failed", collected: 0, error: `未知适配器 ${site.adapter}` };
+    return { site_id: site.id, status: "failed", collected: 0, error: `未知适配器 ${site.adapter}`, hot_list_url: site.hot_list_url };
   }
   const retries = options.retries ?? 1;
   let lastError = "";
@@ -39,7 +45,7 @@ export async function collectSite(site, options = {}) {
         redirect: "follow",
         signal: AbortSignal.timeout(options.timeoutMs ?? 15000)
       });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok) throw failure(`HTTP ${response.status}`, site.hot_list_url);
       const { text, json } = await readBody(response);
       const candidates = await adapter({
         site,
@@ -49,13 +55,13 @@ export async function collectSite(site, options = {}) {
         fetch: fetchImpl,
         timeoutMs: options.timeoutMs ?? 15000
       });
-      if (!candidates.length) throw new Error("热榜页面没有解析出条目（可能已改版或受限）");
-      return { site_id: site.id, status: "ok", collected: candidates.length, error: null, candidates };
+      if (!candidates.length) throw failure("热榜页面没有解析出条目（可能已改版或受限）", site.hot_list_url);
+      return { site_id: site.id, status: "ok", collected: candidates.length, error: null, hot_list_url: site.hot_list_url, candidates };
     } catch (error) {
-      lastError = describe(error);
+      lastError = `${describe(error)}（${error?.url ?? site.hot_list_url}）`;
     }
   }
-  return { site_id: site.id, status: "failed", collected: 0, error: lastError };
+  return { site_id: site.id, status: "failed", collected: 0, error: lastError, hot_list_url: site.hot_list_url };
 }
 
 export async function collectAll(sites, options = {}) {

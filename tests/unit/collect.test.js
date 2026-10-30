@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as cheerio from "cheerio";
 import { collectAll, collectSite } from "../../src/services/collect.js";
 import { adapters } from "../../src/sources/index.js";
 
@@ -67,6 +68,22 @@ test("toutiao adapter strips tracking query strings from links", async () => {
   assert.equal(items[0].url, "https://toutiao.com/trending/1");
 });
 
+test("tophub adapter reads weibo rows from the mirror table", async () => {
+  const adapter = adapters.get("tophub-hot");
+  const html = `<table class="table"><tbody>
+    <tr><td>1.</td><td><a href="https://s.weibo.com/weibo?q=%E7%94%B2">甲条热搜</a></td><td class="ws">42万</td><td></td></tr>
+    <tr><td>2.</td><td><a href="https://s.weibo.com/weibo?q=%E4%B9%99">乙条热搜</a></td><td class="ws">30万</td><td></td></tr>
+  </tbody></table>`;
+  const items = await adapter({ site, text: html, json: null, $: cheerio.load(html) });
+  assert.deepEqual(
+    items.map((item) => [item.title, item.siteRank, item.excerpt]),
+    [
+      ["甲条热搜", 1, "42万"],
+      ["乙条热搜", 2, "30万"]
+    ]
+  );
+});
+
 test("unknown adapter fails without throwing", async () => {
   const result = await collectSite({ ...site, adapter: "nope" }, { fetch: async () => jsonResponse({}), retries: 0 });
   assert.equal(result.status, "failed");
@@ -82,7 +99,7 @@ test("HTTP errors are retried and reported", async () => {
   const result = await collectSite(site, { fetch, retries: 1, timeoutMs: 1000 });
   assert.equal(calls, 2);
   assert.equal(result.status, "failed");
-  assert.equal(result.error, "HTTP 403");
+  assert.equal(result.error, "HTTP 403（https://weibo.com/ajax/side/hotSearch）");
 });
 
 test("collectAll isolates failures and keeps registry order", async () => {
@@ -100,7 +117,7 @@ test("collectAll isolates failures and keeps registry order", async () => {
     ["weibo-hot", "ok"],
     ["zhihu-hot", "failed"]
   ]);
-  assert.equal(results[1].error, "network down");
+  assert.equal(results[1].error, "network down（https://zhihu.com/hot）");
 });
 
 test("empty list is reported as failure", async () => {

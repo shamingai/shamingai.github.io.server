@@ -89,6 +89,14 @@ test("generateDigest writes markdown, article, digest and picked items", async (
   assert.ok(run.finished_at);
 });
 
+test("generateDigest names today's digest when the caller omits the date", async () => {
+  const { db, config, deps } = await fixture({ size: 1 });
+  const result = await generateDigest(db, config, { deps });
+
+  assert.match(result.slug, /^daily-\d{4}-\d{2}-\d{2}$/);
+  assert.equal(result.markdown_path, path.join("blog", "content", "posts", `${result.slug}.md`));
+});
+
 test("generateDigest refuses a duplicate date without regenerate", async () => {
   const { db, config, deps } = await fixture();
   await generateDigest(db, config, { date: "2026-10-18", deps });
@@ -177,6 +185,28 @@ test("generateDigest notes the shortfall when too few items survive", async () =
   assert.equal(result.item_count, 1);
   assert.match(result.note, /只收录 1 条/);
   assert.match(result.note, /1 条未通过内容校验或链接检查/);
+});
+
+test("generateDigest logs a warning per failed site and keeps the url in site_results", async () => {
+  const { db, config, deps } = await fixture();
+  const logs = [];
+  deps.log = (level, message) => logs.push([level, message]);
+  const calls = [];
+  deps.collect = async (sites) =>
+    sites.map((site, index) => {
+      calls.push(site.id);
+      return index === 1
+        ? { site_id: site.id, status: "failed", collected: 0, error: "HTTP 403（https://beta.test/hot）", hot_list_url: "https://beta.test/hot" }
+        : { site_id: site.id, status: "ok", collected: 1, error: null, candidates: [{ url: `https://${site.id}.test/1`, title: `${site.name}一号热点`, siteRank: 1 }] };
+    });
+  const result = await generateDigest(db, config, { date: "2026-10-18", deps });
+  assert.equal(result.item_count, 1);
+  assert.match(result.note, /1 个站点采集失败（beta）/);
+  assert.match(result.note, /重新生成|检查来源地址/);
+  assert.deepEqual(logs.map(([level, message]) => [level, message.includes("beta")]), [["warn", true]]);
+  const failed = result.site_results.find((item) => item.site_id === "beta");
+  assert.equal(failed.hot_list_url, "https://beta.test/hot");
+  assert.match(failed.error, /HTTP 403/);
 });
 
 test("generateDigest fails with 422 when every site fails", async () => {
