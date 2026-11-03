@@ -68,7 +68,7 @@ test("generateDigest writes the article, digest and picked items to the database
   assert.equal(result.markdown_path, undefined);
 
   const article = await get(db, "SELECT title, kind, category_path, published_on, body FROM articles WHERE slug = 'daily-2026-10-18'");
-  assert.equal(article.title, "2026-10-18 今日热门前十资讯");
+  assert.equal(article.title, "2026-10-18 每日热门前十");
   assert.equal(article.kind, "digest");
   assert.equal(article.category_path, "资讯");
   assert.equal(article.published_on, "2026-10-18");
@@ -129,7 +129,7 @@ test("generateDigest keeps hot and tech digests apart on the same day", async ()
   assert.equal(hot.slug, "daily-2026-10-18");
   assert.equal(tech.slug, "daily-2026-10-18-tech");
   assert.equal(tech.item_count, 3);
-  assert.equal((await get(db, "SELECT title FROM articles WHERE slug = ?", [tech.slug])).title, "2026-10-18 每日热门技术资讯");
+  assert.equal((await get(db, "SELECT title FROM articles WHERE slug = ?", [tech.slug])).title, "2026-10-18 每日热门技术");
   assert.deepEqual(
     (await all(db, "SELECT slug, catalog FROM digests ORDER BY slug")).map((row) => ({ ...row })),
     [

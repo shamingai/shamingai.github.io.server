@@ -8,7 +8,7 @@ export function digestSlug(date, key = "") {
 }
 
 export function digestTitle(date, { regenerated = false, label = catalogLabel() } = {}) {
-  return `${date} ${label}${regenerated ? "（更新）" : ""}`;
+  return `${date} 每日${label}${regenerated ? "（更新）" : ""}`;
 }
 
 function quote(value) {

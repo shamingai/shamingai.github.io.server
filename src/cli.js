@@ -11,7 +11,7 @@ const USAGE = `用法：node src/cli.js <命令> [选项]
   sync                    从 SITE_REPO_DIR 的内容仓库导入文章
   generate [--date 日期] [--catalog hot|tech] [--regenerate] [--dry-run]
                           生成指定日期、品类的资讯（默认上海时间今天，品类 hot）
-                          tech 为「每日热门技术资讯」，同一天可与 hot 并存
+                          tech 为「热门技术」，同一天可与 hot 并存
                           --dry-run 只预览：不写数据库
   serve                   启动 HTTP 服务
   run <run_id>            查看一次运行报告

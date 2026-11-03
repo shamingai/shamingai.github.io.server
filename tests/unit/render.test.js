@@ -47,8 +47,8 @@ test("renderDigestBody includes notes and regeneration notice", () => {
 test("slug and summary helpers", () => {
   assert.equal(digestSlug("2026-10-18"), "daily-2026-10-18");
   assert.equal(digestSlug("2026-10-18", "tech"), "daily-2026-10-18-tech");
-  assert.equal(digestTitle("2026-10-18"), "2026-10-18 今日热门前十资讯");
-  assert.equal(digestSummary([]), "今日热门前十资讯");
+  assert.equal(digestTitle("2026-10-18"), "2026-10-18 每日热门前十");
+  assert.equal(digestSummary([]), "热门前十");
   const summary = digestSummary(items);
   assert.match(summary, /今日热点：第一条/);
   assert.match(summary, /2 个来源站点/);
