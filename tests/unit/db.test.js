@@ -116,7 +116,7 @@ test("DB_PROFILE switches between the test and prod MySQL settings", async () =>
     MYSQL_TEST_USER: "blog",
     MYSQL_TEST_PASSWORD: "test-secret",
     MYSQL_TEST_DATABASE: "shamingai_blog",
-    MYSQL_PROD_HOST: "116.62.78.39",
+    MYSQL_PROD_HOST: "db.example.com",
     MYSQL_PROD_USER: "blog_prod",
     MYSQL_PROD_PASSWORD: "prod-secret",
     MYSQL_PROD_DATABASE: "prod"
@@ -128,7 +128,7 @@ test("DB_PROFILE switches between the test and prod MySQL settings", async () =>
 
   const deployed = loadConfig({ ...env, DB_PROFILE: "prod" }).database;
   assert.equal(deployed.profile, "prod");
-  assert.equal(deployed.mysql.host, "116.62.78.39");
+  assert.equal(deployed.mysql.host, "db.example.com");
   assert.equal(deployed.mysql.database, "prod");
 
   const fallback = loadConfig({ DB_PROFILE: "prod", DB_PATH: "/tmp/blog.db" }).database;

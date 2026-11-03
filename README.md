@@ -34,7 +34,7 @@ deploy/             systemd unit、nginx.conf、可选 Dockerfile
 | `DB_PROFILE` | 叠加载入的配置文件 | 连接变量前缀 | 用途 |
 | --- | --- | --- | --- |
 | `test`（默认） | `.env.test` | `MYSQL_TEST_*` | 本地 MySQL |
-| `prod` | `.env.prod` | `MYSQL_PROD_*` | 部署机连 `116.62.78.39` |
+| `prod` | `.env.prod` | `MYSQL_PROD_*` | 部署机连生产 MySQL |
 
 加载顺序是 `.env` → `.env.$DB_PROFILE` → 进程环境变量，后者覆盖前者。所选环境的 `HOST` 或 `USER` 为空时，后端回退到 `DB_PATH` 指向的 SQLite 文件（`node:sqlite` 实验特性），只用于离线试跑；MySQL 是主路径。
 
@@ -114,7 +114,7 @@ npm run generate -- --date 2026-10-18 --dry-run   # 纯预览：不写数据库�
 ```bash
 git clone git@github_shamingai.com:shamingai/shamingai.github.io.server.git /srv/shamingai.github.io.server
 cd /srv/shamingai.github.io.server && npm ci --omit=dev && cp .env.example .env   # 填好
-# 数据库：.env 里写 DB_PROFILE=prod，并把 MYSQL_PROD_* 填进 .env.prod（部署机连 116.62.78.39）
+# 数据库：.env 里写 DB_PROFILE=prod，并把 MYSQL_PROD_* 填进 .env.prod（部署机连生产 MySQL）
 # 另需一份本站仓库检出供写入文章：
 git clone git@github_shamingai.com:shamingai/shamingai.github.io.git /srv/site
 # 其他必填：SITE_REPO_DIR=/srv/site、HOST=127.0.0.1、SCHEDULER=off（每日生成由本地调度器 POST /api/digests 触发）
