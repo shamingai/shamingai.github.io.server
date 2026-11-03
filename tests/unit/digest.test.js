@@ -26,9 +26,9 @@ async function fixture({ size = 3, sites = SITES, collect } = {}) {
         sites.map((site, siteIndex) => ({
           site_id: site.id,
           status: "ok",
-          collected: 5,
+          collected: size,
           error: null,
-          candidates: Array.from({ length: 5 }, (_, index) => ({
+          candidates: Array.from({ length: size }, (_, index) => ({
             url: `https://${site.id}.test/${index + 1}`,
             title: `${site.name}${["A","B","C","D","E","F"][index]}号热点`,
             siteRank: index + 1
@@ -165,8 +165,8 @@ test("generateDigest with regenerate replaces the existing digest", async () => 
 });
 
 test("generateDigest drops dead links and keeps the rest", async () => {
-  const { db, config, deps } = await fixture({ size: 10 });
-  const dead = (url) => ["https://alpha.test/1", "https://alpha.test/2", "https://beta.test/1"].includes(url);
+  const { db, config, deps } = await fixture({ size: 6 });
+  const dead = (url) => ["https://alpha.test/1", "https://beta.test/1"].includes(url);
   deps.linkCheck = {
     fetch: async (url) => new Response("", { status: dead(url) ? 404 : 200 }),
     timeoutMs: 1000
@@ -184,9 +184,10 @@ test("generateDigest drops dead links and keeps the rest", async () => {
       }))
     }));
   const result = await generateDigest(db, config, { date: "2026-10-18", deps });
-  assert.equal(result.item_count, 9);
-  assert.equal(result.dropped.filter((item) => /404/.test(item.reason)).length, 3);
+  assert.equal(result.item_count, 6);
+  assert.equal(result.dropped.filter((item) => /404/.test(item.reason)).length, 2);
   assert.equal((await get(db, "SELECT COUNT(*) AS n FROM picked_items WHERE url LIKE 'https://%.test/1'")).n, 0);
+  assert.doesNotMatch(result.note ?? "", /只收录/);
 });
 
 test("generateDigest drops items the model cannot summarise", async () => {
@@ -199,9 +200,33 @@ test("generateDigest drops items the model cannot summarise", async () => {
     }
   };
   const result = await generateDigest(db, config, { date: "2026-10-18", deps });
-  assert.equal(result.item_count, 4);
+  assert.equal(result.item_count, 3);
   assert.ok(result.dropped.some((item) => /无法可靠生成摘要/.test(item.reason)));
   assert.equal(result.note, null);
+});
+
+test("generateDigest caps how many items one site can fill", async () => {
+  const sites = [
+    ...SITES,
+    { id: "gamma", name: "丙站", home_url: "https://gamma.test", hot_list_url: "https://gamma.test/hot", adapter: "generic", weight: 1, max_candidates: 20 }
+  ];
+  const { db, config, deps } = await fixture({ size: 6, sites });
+  deps.collect = async () =>
+    sites.map((site) => ({
+      site_id: site.id,
+      status: "ok",
+      collected: 20,
+      error: null,
+      candidates: Array.from({ length: 20 }, (_, index) => ({
+        url: `https://${site.id}.test/${index + 1}`,
+        title: `${site.name}第${index + 1}条`,
+        siteRank: index + 1
+      }))
+    }));
+  const result = await generateDigest(db, config, { date: "2026-10-18", deps });
+  assert.equal(result.item_count, 6);
+  const bySite = await all(db, "SELECT site_id, COUNT(*) AS n FROM picked_items WHERE digest_date = '2026-10-18' GROUP BY site_id ORDER BY site_id");
+  assert.deepEqual(bySite.map((row) => Number(row.n)), [2, 2, 2]);
 });
 
 test("generateDigest notes the shortfall when too few items survive", async () => {

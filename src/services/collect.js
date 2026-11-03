@@ -92,7 +92,7 @@ export async function collectAll(sites, options = {}) {
 export function enabledSites(db, audience = "hot") {
   return all(
     db,
-    "SELECT id, name, home_url, hot_list_url, adapter, weight, max_candidates FROM source_sites WHERE enabled = 1 AND audience = ? ORDER BY id",
+    "SELECT id, name, home_url, hot_list_url, adapter, audience, weight, max_candidates FROM source_sites WHERE enabled = 1 AND audience = ? ORDER BY id",
     [audience]
   ).then((rows) => rows.map((row) => ({ ...row, weight: Number(row.weight), max_candidates: Number(row.max_candidates) })));
 }

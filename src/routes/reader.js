@@ -8,6 +8,7 @@ import {
   listArchive,
   listCategories,
   listCategoryPosts,
+  listDigestCatalogs,
   listDigests,
   listHistory,
   listPosts,
@@ -64,5 +65,6 @@ export async function readerRoutes(app, { db, config = {} }) {
   app.get("/api/about", async () => getAbout(db));
   app.get("/api/history", async () => listHistory(db));
   app.get("/api/digests", async (request) => listDigests(db, request.query ?? {}));
+  app.get("/api/digests/catalogs", async () => listDigestCatalogs());
   app.get("/api/digests/:key", async (request) => getDigest(db, request.params.key));
 }

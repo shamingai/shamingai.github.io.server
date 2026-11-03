@@ -1,3 +1,5 @@
+import { catalogLabel } from "./catalog.js";
+
 export const DIGEST_TAG = "资讯";
 export const DIGEST_CATEGORY = "资讯";
 
@@ -5,7 +7,7 @@ export function digestSlug(date, key = "") {
   return key ? `daily-${date}-${key}` : `daily-${date}`;
 }
 
-export function digestTitle(date, { regenerated = false, label = "今日热门前十资讯" } = {}) {
+export function digestTitle(date, { regenerated = false, label = catalogLabel() } = {}) {
   return `${date} ${label}${regenerated ? "（更新）" : ""}`;
 }
 
@@ -31,7 +33,7 @@ export function renderDigestBody({ items, note, regenerated = false }) {
   return lines.join("\n").replace(/\n+$/, "") + "\n";
 }
 
-export function digestSummary(items, { label = "今日热门前十资讯" } = {}) {
+export function digestSummary(items, { label = catalogLabel() } = {}) {
   const top = items[0];
   if (!top) return label;
   return `今日热点：${top.title}。共收录 ${items.length} 条，来自 ${new Set(items.map((item) => item.siteId)).size} 个来源站点。`;

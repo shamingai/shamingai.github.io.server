@@ -66,6 +66,7 @@ export function mergeCandidates(results, weights = new Map()) {
       group.sources.push({
         siteId: result.site_id,
         siteName: result.site_name ?? result.site_id,
+        url,
         siteRank: rank,
         title,
         excerpt: candidate.excerpt ?? "",
@@ -80,8 +81,11 @@ export function mergeCandidates(results, weights = new Map()) {
   return groups
     .map((group) => {
       const primary = [...group.sources].sort((left, right) => left.siteRank - right.siteRank)[0];
+      // 代表条目换了来源时，链接也要跟着换：多家报道同一件事时，挑中的来源得能打开自己的原文。
+      const sameSource = group.sources.filter((source) => source.siteId === primary.siteId);
+      const url = sameSource.length === group.sources.length ? group.url : normalizeUrl(primary.url) || group.url;
       return {
-        url: group.url,
+        url,
         title: primary.title,
         excerpt: group.excerpt,
         score: Math.round(group.score * 1000) / 1000,

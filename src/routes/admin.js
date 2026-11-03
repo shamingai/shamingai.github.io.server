@@ -1,7 +1,7 @@
 import { all, get, run } from "../db.js";
 import { ApiError, badRequest, conflict, notFound } from "../errors.js";
 import { adapterKeys } from "../sources/index.js";
-import { readCatalog } from "../services/catalog.js";
+import { CATALOG_KEYS, readCatalog } from "../services/catalog.js";
 import { todayInShanghai } from "../services/sync.js";
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -56,7 +56,7 @@ function writeSite(db, body, existing = {}) {
   }
   const enabled = body.enabled === undefined ? (existing.enabled ?? 1) : body.enabled ? 1 : 0;
   const audience = readCatalog(body.audience ?? existing.audience, "hot");
-  if (!audience) throw badRequest("invalid_site", "audience 只能是 hot 或 tech");
+  if (!audience) throw badRequest("invalid_site", `audience 只能是 ${CATALOG_KEYS.join("、")}`);
   return {
     id,
     name,

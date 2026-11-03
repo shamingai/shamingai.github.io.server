@@ -4,7 +4,7 @@ import { collectAll, enabledSites } from "./collect.js";
 import { filterReachable } from "./link-check.js";
 import { mergeCandidates } from "./rank.js";
 import { headingsOf, todayInShanghai } from "./sync.js";
-import { catalogLabel, readCatalog } from "./catalog.js";
+import { CATALOG_KEYS, catalogLabel, readCatalog } from "./catalog.js";
 import { DIGEST_CATEGORY, DIGEST_TAG, digestSlug, digestSummary, digestTitle, renderDigestBody } from "./render.js";
 
 export class GenerateError extends Error {
@@ -80,7 +80,7 @@ export async function digestExists(db, slug) {
 export async function generateDigest(db, config, { deps: overrides, ...options }) {
   const { date = todayInShanghai(), regenerate = false, dryRun = false, kind = "manual", now = new Date() } = options;
   const catalog = readCatalog(options.catalog);
-  if (!catalog) throw new GenerateError(400, "invalid_catalog", "catalog 只能是 hot 或 tech");
+  if (!catalog) throw new GenerateError(400, "invalid_catalog", `catalog 只能是 ${CATALOG_KEYS.join("、")}`);
   const key = catalog === "hot" ? "" : catalog;
   const label = catalogLabel(catalog);
   const slug = digestSlug(date, key);
@@ -132,10 +132,34 @@ export async function generateDigest(db, config, { deps: overrides, ...options }
 
     const picked = [];
     const checked = [];
-    let cursor = 0;
+    // 快讯类来源一次能给二十条、又没有名次，按分数排会把整个榜单刷满，所以每个来源最多占几条。
+    // 名额在挑之前按分数顺序折叠，让后面的来源顶上；但如果其他来源的候选已经不够凑满，
+    // 还是放行超额的那条，宁可来源集中也不要缺条。摘要或链接检查没过的条目也会用后面的候选补上。
     const size = config.digestSize;
-    while (picked.length < size && cursor < ranked.length) {
-      const batch = ranked.slice(cursor, cursor + size);
+    const siteCap = Math.max(2, Math.floor(size / 3));
+    const used = new Map();
+    const rest = new Map();
+    for (const candidate of ranked) rest.set(candidate.siteId, (rest.get(candidate.siteId) ?? 0) + 1);
+    let room = ranked.length;
+    const preferred = [];
+    for (const candidate of ranked) {
+      const taken = used.get(candidate.siteId) ?? 0;
+      const left = room - (rest.get(candidate.siteId) ?? 0);
+      rest.set(candidate.siteId, (rest.get(candidate.siteId) ?? 0) - 1);
+      if (taken < siteCap || preferred.length + left < size) {
+        used.set(candidate.siteId, taken + 1);
+        preferred.push(candidate);
+      }
+      room -= 1;
+    }
+    const preferredUrls = new Set(preferred.map((candidate) => candidate.url));
+    const candidates = [...preferred, ...ranked.filter((candidate) => !preferredUrls.has(candidate.url))];
+    let pickedCount = 0;
+    let overflowed = false;
+    let cursor = 0;
+    // 每轮按分数顺序多拿一些候选：摘要失败的、链接不通的都会消耗掉名额，后面的候选要能顶上来。
+    while (pickedCount < size && cursor < candidates.length && !overflowed) {
+      const batch = candidates.slice(cursor, cursor + (size - pickedCount) * 2);
       cursor += batch.length;
       for (const candidate of batch) {
         try {
@@ -146,8 +170,16 @@ export async function generateDigest(db, config, { deps: overrides, ...options }
       }
       if (checked.length) {
         const { accepted, rejected } = await filterReachable(checked, deps.linkCheck);
+        const seen = new Set(picked.map((item) => item.url));
+        for (const item of accepted) {
+          if (seen.has(item.url)) continue;
+          seen.add(item.url);
+          if (picked.length < size) picked.push(item);
+          // 名额用完后又跨进了非优先候选，说明是超额补位的，按上限判定丢弃。
+          else if (!preferredUrls.has(item.url)) overflowed = true;
+        }
         checked.length = 0;
-        picked.push(...accepted);
+        pickedCount = picked.length;
         report.dropped.push(...rejected);
       }
     }

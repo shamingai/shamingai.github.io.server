@@ -44,8 +44,21 @@ export const adapters = {
 };
 
 // 部分接口只接受 POST。采集时改发 POST 并把请求体按 JSON 发出，适配器本身只负责解析返回值。
-const POST_BODIES = new Map([["juejin-recommend", { id_type: 2, client_type: 2608, sort_type: 200, cursor: "0", limit: 10 }]]);
+// 值可以是对象，也可以是函数：36氪的请求体每次都要带当前毫秒时间戳，不能写死。
+const POST_BODIES = new Map([
+  ["juejin-recommend", { id_type: 2, client_type: 2608, sort_type: 200, cursor: "0", limit: 10 }],
+  [
+    "36kr-newsflash",
+    () => ({
+      partner_id: "wap",
+      param: { siteId: 1, platformId: 2, pageSize: 20, pageEvent: 0, pageCallback: "", slideEvent: "" },
+      timestamp: Date.now()
+    })
+  ]
+]);
 
 export function postBodyOf(adapter) {
-  return POST_BODIES.get(adapter) ?? null;
+  const body = POST_BODIES.get(adapter);
+  if (typeof body === "function") return body();
+  return body ?? null;
 }

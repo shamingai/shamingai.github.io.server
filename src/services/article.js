@@ -1,6 +1,6 @@
 import { all, get } from "../db.js";
 import { badRequest, notFound } from "../errors.js";
-import { catalogOfSlug, dateOfSlug, readCatalog } from "./catalog.js";
+import { CATALOG_KEYS, catalogOfSlug, dateOfSlug, listCatalogs, readCatalog } from "./catalog.js";
 
 const DEFAULT_PAGE_SIZE = 10;
 const MAX_PAGE_SIZE = 100;
@@ -313,10 +313,15 @@ function digestItem(row, record) {
   };
 }
 
+// 标签页用：品类清单由后端下发，前端不再写死。
+export function listDigestCatalogs() {
+  return { items: listCatalogs() };
+}
+
 export async function listDigests(db, query = {}) {
   const { page, pageSize } = paging(query);
   const catalog = readCatalog(query.catalog);
-  if (!catalog) throw badRequest("invalid_catalog", "catalog 只能是 hot 或 tech");
+  if (!catalog) throw badRequest("invalid_catalog", `catalog 只能是 ${CATALOG_KEYS.join("、")}`);
   // 同步进来的旧资讯只有 daily-日期 这种 slug，统一按 hot 算。
   const rows = (await orderedRows(db, "digest")).filter((row) => catalogOfSlug(row.slug) === catalog);
   const slice = rows.slice((page - 1) * pageSize, page * pageSize);
