@@ -4,8 +4,8 @@
 
 - 每日 08:00（Asia/Shanghai）采集百度热搜、微博热搜、知乎热榜、头条热榜、少数派热门；
 - 跨站去重合并、按热度加权排序，LLM 生成标题/摘要/推荐理由，逐条检查原文链接可达；
-- 选出前 10 条，写成 `daily-YYYY-MM-DD.md`（标签、分类都是「资讯」）放进本站仓库的 `blog/content/posts/`；
-- 同时写入 MySQL，前端通过 `/api/digests`、`/api/digests/:date` 读取；
+- 选出前 10 条，正文（标题、分类「资讯」、正文、标题锚点）直接写入 MySQL 的 `articles` 表，不再落成 md 文件；
+- 前端通过 `/api/digests`、`/api/digests/:date` 读取；
 - 前端（`blog/app`）的开发服务器把 `/api` 代理到这里。
 
 技术栈：Node.js ≥ 22.5、Fastify 5、cheerio、mysql2、OpenAI 兼容 LLM 接口。数据库用 MySQL，两套连接信息按 `DB_PROFILE` 切换（见下文「数据库」）；所选环境没有填主机或账号时回退到内置 `node:sqlite` 单文件，方便离线试跑。
@@ -155,28 +155,15 @@ nginx -t -c <临时 nginx.conf>      # 该临时 nginx.conf 的 http {} 里 incl
 
 Docker 方式见 `deploy/Dockerfile` 顶部注释（容器里同样建议 `HOST=0.0.0.0` 并由 Nginx 反代容器端口）。
 
-### 生成之后要 commit
+### 生成之后不需要 commit
 
-生成器只写文件，不执行 git。作者本地每天 08:00 由调度器 `POST /api/digests` 触发生成后，再手动推送：
-
-```bash
-cd "$SITE_REPO_DIR"
-git add blog/content/posts/daily-*.md
-git commit -m "daily: $(date +%F) 资讯"
-git push
-```
-
-推送后由站点现有的构建流程发布。可选：本机 crontab 在生成之后补一步推送（生产后端 `SCHEDULER=off`，不要把 cron 放在服务器上重复生成）：
-
-```cron
-10 8 * * * cd "$HOME/jekyll/shamingai.github.io" && git pull --rebase --autostash && git add blog/content/posts/daily-*.md && git commit -m "daily: $(date +\%F) 资讯" && git push || true
-```
+资讯正文只存在数据库里，生成完立刻对前端可见，没有文件要提交，也不需要再推送站点仓库。`npm run sync` 仍然可以导入 `SITE_REPO_DIR` 下手写的 md 文章；历史上生成过的 `blog/content/posts/daily-*.md` 如果还在，可以删掉，同步不会因为它们消失而删库里的资讯。
 
 反代配置见上文的 `deploy/nginx.conf` 一节。
 
 ## 测试
 
 ```bash
-npm test          # 72 个用例：unit + contract
+npm test          # 91 个用例：unit + contract
 npm run coverage  # 行 89.30% / 分支 79.73% / 函数 87.69%
 ```

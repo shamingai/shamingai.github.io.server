@@ -1,11 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { generateDigest, getRun, GenerateError } from "../../src/services/digest.js";
 import { seedSites } from "../../src/sources/index.js";
-import { syncContent } from "../../src/services/sync.js";
 import { all, get } from "../../src/db.js";
 import { createTestDatabase } from "../helpers.js";
 
@@ -59,27 +58,30 @@ async function expectGenerateError(promise, statusCode, code) {
   });
 }
 
-test("generateDigest writes markdown, article, digest and picked items", async () => {
-  const { db, config, deps, siteRepoDir } = await fixture();
+test("generateDigest writes the article, digest and picked items to the database only", async () => {
+  const { db, config, deps } = await fixture();
   const result = await generateDigest(db, config, { date: "2026-10-18", deps });
 
   assert.equal(result.status, "generated");
   assert.equal(result.item_count, 3);
-  assert.equal(result.markdown_path, path.join("blog", "content", "posts", "daily-2026-10-18.md"));
+  assert.equal(result.slug, "daily-2026-10-18");
+  assert.equal(result.markdown_path, undefined);
 
-  const markdown = await readFile(path.join(siteRepoDir, result.markdown_path), "utf8");
-  assert.match(markdown, /^2026-10-18 今日热门前十资讯\n\ndate: 2026-10-18\ncategory: 资讯\n/);
-  assert.match(markdown, /## 1\. 编辑标题 https:\/\/alpha\.test\/1/);
-  assert.match(markdown, /\*\*推荐理由\*\*：推荐理由/);
-
-  const article = await get(db, "SELECT kind, category_path, published_on FROM articles WHERE slug = 'daily-2026-10-18'");
-  assert.deepEqual({ ...article }, { kind: "digest", category_path: "资讯", published_on: "2026-10-18" });
+  const article = await get(db, "SELECT title, kind, category_path, published_on, body FROM articles WHERE slug = 'daily-2026-10-18'");
+  assert.equal(article.title, "2026-10-18 今日热门前十资讯");
+  assert.equal(article.kind, "digest");
+  assert.equal(article.category_path, "资讯");
+  assert.equal(article.published_on, "2026-10-18");
+  assert.match(article.body, /^共收录 3 条/);
+  assert.doesNotMatch(article.body, /^date: /m);
+  assert.match(article.body, /## 1\. 编辑标题 https:\/\/alpha\.test\/1/);
+  assert.match(article.body, /\*\*推荐理由\*\*：推荐理由/);
   assert.deepEqual(
     (await all(db, "SELECT name FROM article_tags WHERE slug = 'daily-2026-10-18'")).map((row) => row.name),
     ["资讯"]
   );
-  const digest = await get(db, "SELECT item_count, status FROM digests WHERE digest_date = '2026-10-18'");
-  assert.deepEqual({ ...digest }, { item_count: 3, status: "generated" });
+  const digest = await get(db, "SELECT slug, item_count, status, markdown_path FROM digests WHERE digest_date = '2026-10-18'");
+  assert.deepEqual({ ...digest }, { slug: "daily-2026-10-18", item_count: 3, status: "generated", markdown_path: null });
   assert.equal((await get(db, "SELECT COUNT(*) AS n FROM picked_items WHERE digest_date = '2026-10-18'")).n, 3);
   assert.equal((await get(db, "SELECT url FROM picked_items WHERE digest_date = '2026-10-18' AND rank_no = 1")).url, "https://alpha.test/1");
 
@@ -94,7 +96,7 @@ test("generateDigest names today's digest when the caller omits the date", async
   const result = await generateDigest(db, config, { deps });
 
   assert.match(result.slug, /^daily-\d{4}-\d{2}-\d{2}$/);
-  assert.equal(result.markdown_path, path.join("blog", "content", "posts", `${result.slug}.md`));
+  assert.equal((await get(db, "SELECT slug FROM digests WHERE slug = ?", [result.slug])).slug, result.slug);
 });
 
 test("generateDigest refuses a duplicate date without regenerate", async () => {
@@ -236,32 +238,27 @@ test("generateDigest reports llm_not_configured when no client is available", as
   );
 });
 
-test("generateDigest round-trips through syncContent", async () => {
-  const { db, config, deps, siteRepoDir } = await fixture();
-  const { mkdir, writeFile } = await import("node:fs/promises");
-  await mkdir(path.join(siteRepoDir, "blog", "content"), { recursive: true });
-  await writeFile(path.join(siteRepoDir, "blog", "content", "site.json"), JSON.stringify({ articles: [] }));
+test("generateDigest reads back through the API without a markdown round-trip", async () => {
+  const { db, config, deps } = await fixture();
   const generated = await generateDigest(db, config, { date: "2026-10-18", deps });
 
-  const fresh = await createTestDatabase();
-  await syncContent(fresh, siteRepoDir);
-  const row = await get(fresh, "SELECT kind, category_path, summary FROM articles WHERE slug = 'daily-2026-10-18'");
+  const row = await get(db, "SELECT kind, category_path, summary FROM articles WHERE slug = 'daily-2026-10-18'");
   assert.equal(row.kind, "digest");
   assert.equal(row.category_path, "资讯");
   assert.match(row.summary, /今日热点/);
-  assert.equal((await get(fresh, "SELECT COUNT(*) AS n FROM headings WHERE slug = 'daily-2026-10-18'")).n, 3);
+  assert.equal((await get(db, "SELECT COUNT(*) AS n FROM headings WHERE slug = 'daily-2026-10-18'")).n, 3);
   assert.equal(generated.item_count, 3);
 });
 
 test("generateDigest with dryRun is a pure preview: no database rows, no files", async () => {
-  const { db, config, deps, siteRepoDir } = await fixture();
+  const { db, config, deps } = await fixture();
   const result = await generateDigest(db, config, { date: "2026-10-18", deps, dryRun: true });
 
   assert.equal(result.dry_run, true);
   assert.equal(result.item_count, 3);
-  assert.equal(result.markdown_path, path.join("blog", "content", "posts", "daily-2026-10-18.md"));
+  assert.equal(result.markdown_path, undefined);
   assert.match(result.markdown, /## 1\. /);
-  await assert.rejects(readFile(path.join(siteRepoDir, result.markdown_path), "utf8"), /ENOENT/);
+  assert.doesNotMatch(result.markdown, /^date: /m);
 
   assert.equal((await get(db, "SELECT COUNT(*) AS n FROM digests")).n, 0);
   assert.equal((await get(db, "SELECT COUNT(*) AS n FROM picked_items")).n, 0);

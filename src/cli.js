@@ -68,7 +68,6 @@ async function main() {
         break;
       }
       case "generate": {
-        if (!config.siteRepoDir) throw new Error("请先设置 SITE_REPO_DIR 指向本站仓库的检出目录");
         const date = options.date ?? todayInShanghai();
         const result = await generateDigest(db, config, {
           date,
@@ -77,13 +76,11 @@ async function main() {
           kind: "manual"
         });
         if (options.dryRun) {
-          process.stderr.write(`预览模式：未写入数据库，也未写入文件（run_id=${result.run_id}）\n`);
+          process.stderr.write(`预览模式：未写入数据库（run_id=${result.run_id}）\n`);
           process.stdout.write(`${result.markdown}\n`);
           break;
         }
-        process.stdout.write(
-          `已生成 ${result.slug}（${result.status}，${result.item_count} 条），写入 ${result.markdown_path}；run_id=${result.run_id}\n`
-        );
+        process.stdout.write(`已生成 ${result.slug}（${result.status}，${result.item_count} 条）；run_id=${result.run_id}\n`);
         if (result.note) process.stdout.write(`说明：${result.note}\n`);
         break;
       }

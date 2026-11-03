@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS digests (
   note TEXT NULL,
   status VARCHAR(16) NOT NULL,
   generated_at VARCHAR(32) NOT NULL,
-  markdown_path TEXT NOT NULL,
+  markdown_path TEXT NULL,
   UNIQUE KEY digests_slug (slug),
   CONSTRAINT digests_status CHECK (status IN ('generated', 'replaced', 'failed'))
 );

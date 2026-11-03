@@ -1,12 +1,10 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { get, run, transaction } from "../db.js";
 import { createOpenAiClient, editCandidate, limitText } from "../llm/client.js";
 import { collectAll, enabledSites } from "./collect.js";
 import { filterReachable } from "./link-check.js";
 import { mergeCandidates } from "./rank.js";
 import { headingsOf, todayInShanghai } from "./sync.js";
-import { DIGEST_CATEGORY, DIGEST_TAG, digestSlug, digestSummary, digestTitle, renderDigest } from "./render.js";
+import { DIGEST_CATEGORY, DIGEST_TAG, digestSlug, digestSummary, digestTitle, renderDigestBody } from "./render.js";
 
 export class GenerateError extends Error {
   constructor(statusCode, code, message, extra) {
@@ -21,10 +19,6 @@ let sequence = 0;
 export function newRunId(now = new Date()) {
   sequence = (sequence + 1) % 1000;
   return `run-${now.toISOString().replace(/[-:.TZ]/g, "")}-${String(sequence).padStart(3, "0")}`;
-}
-
-export function digestFile(siteRepoDir, date) {
-  return path.join(siteRepoDir, "blog", "content", "posts", `${digestSlug(date)}.md`);
 }
 
 function defaultDeps(config) {
@@ -157,41 +151,37 @@ export async function generateDigest(db, config, { deps: overrides, ...options }
 
     const note = picked.length < size ? `本次只收录 ${picked.length} 条：${describeShortfall(report)}。` : null;
     const regenerated = await digestExists(db, date);
-    const summary = digestSummary(date, picked);
+    const slug = digestSlug(date);
+    const summary = digestSummary(picked);
     const title = digestTitle(date);
-    const file = digestFile(config.siteRepoDir, date);
-    const markdown = renderDigest({ date, title: digestTitle(date), summary, items: picked, note });
-    const relativePath = path.relative(config.siteRepoDir, file);
+    const body = renderDigestBody({ items: picked, note, regenerated });
     const status = regenerated ? "replaced" : "generated";
     if (dryRun) {
       await finishRun(db, runId, { siteResults: report.site_results, dropped: report.dropped, outcome: "dry_run" });
       return {
         run_id: runId,
         date,
-        slug: digestSlug(date),
+        slug,
         item_count: picked.length,
         note,
         status,
         dry_run: true,
-        markdown_path: relativePath,
         site_results: report.site_results,
         dropped: report.dropped,
-        markdown
+        markdown: body
       };
     }
-    await mkdir(path.dirname(file), { recursive: true });
-    await writeFile(file, markdown, "utf8");
 
     const updatedAt = new Date().toISOString();
     await transaction(db, async (tx) => {
-      await upsertDigestArticle(tx, { date, title, summary, body: markdown, updatedAt });
+      await upsertDigestArticle(tx, { date, title, summary, body, updatedAt });
       await run(tx, "DELETE FROM picked_items WHERE digest_date = ?", [date]);
       await run(tx, "DELETE FROM digests WHERE digest_date = ?", [date]);
       await run(
         tx,
-        `INSERT INTO digests (digest_date, slug, title, item_count, note, status, generated_at, markdown_path)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [date, digestSlug(date), title, picked.length, note, status, updatedAt, relativePath]
+        `INSERT INTO digests (digest_date, slug, title, item_count, note, status, generated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [date, slug, title, picked.length, note, status, updatedAt]
       );
       for (const [index, item] of picked.entries()) {
         await run(
@@ -218,11 +208,10 @@ export async function generateDigest(db, config, { deps: overrides, ...options }
     return {
       run_id: runId,
       date,
-      slug: digestSlug(date),
+      slug,
       item_count: picked.length,
       note,
       status,
-      markdown_path: relativePath,
       site_results: report.site_results,
       dropped: report.dropped
     };
@@ -270,8 +259,4 @@ function describeShortfall(report) {
   if (report.dropped.length) parts.push(`${report.dropped.length} 条未通过内容校验或链接检查`);
   if (!parts.length) parts.push("可用热点不足十条，可启用更多来源站点后重新生成");
   return parts.join("；");
-}
-
-export async function readDigestMarkdown(config, date) {
-  return readFile(digestFile(config.siteRepoDir, date), "utf8");
 }

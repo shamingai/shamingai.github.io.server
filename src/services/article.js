@@ -290,36 +290,53 @@ export async function listHistory(db) {
   };
 }
 
+// 资讯列表的唯一数据源是 articles（kind='digest'），和首页 /api/posts 一致。
+// digests 表只保存抓取明细（条目数、状态），由生成流程或 sync 补建。
+// 从 Markdown 同步进 articles 的资讯没有 digests 行，若列表改回读 digests 就会出现“首页有、资讯页没有”。
+async function digestRow(db, date) {
+  // digests 表只补充抓取明细（条目数、状态、生成时间）。资讯以 articles 为准，
+  // 从 Markdown 同步进来、没走过生成流程的日期在这里查不到记录，按“已同步”处理。
+  return get(db, "SELECT item_count, status, note, generated_at FROM digests WHERE digest_date = ?", [date]);
+}
+
 export async function listDigests(db, query) {
   const { page, pageSize } = paging(query);
-  const total = Number((await get(db, "SELECT COUNT(*) AS n FROM digests")).n);
-  const rows = await all(
-    db,
-    "SELECT digest_date, slug, title, item_count, status, generated_at FROM digests ORDER BY digest_date DESC LIMIT ? OFFSET ?",
-    [pageSize, (page - 1) * pageSize]
-  );
+  const rows = await orderedRows(db, "digest");
+  const slice = rows.slice((page - 1) * pageSize, page * pageSize);
+  const records = await Promise.all(slice.map((row) => digestRow(db, row.published_on)));
   return {
-    items: rows.map((row) => ({
-      date: row.digest_date,
+    items: slice.map((row, index) => ({
+      date: row.published_on,
       slug: row.slug,
       title: row.title,
-      item_count: row.item_count,
-      status: row.status,
-      generated_at: row.generated_at
+      item_count: records[index]?.item_count ?? null,
+      status: records[index]?.status ?? "synced",
+      generated_at: records[index]?.generated_at ?? null
     })),
-    total,
+    total: rows.length,
     page,
-    page_size: pageSize
+    page_size: pageSize,
+    page_count: Math.max(1, Math.ceil(rows.length / pageSize))
   };
 }
 
 export async function getDigest(db, date) {
-  const row = await get(
+  const article = await get(
     db,
-    "SELECT digest_date, slug, title, item_count, note, status, generated_at FROM digests WHERE digest_date = ?",
+    "SELECT slug, title, published_on FROM articles WHERE kind = 'digest' AND published_on = ? ORDER BY slug DESC LIMIT 1",
     [date]
   );
-  if (!row) throw notFound("digest_not_found", "这一天没有资讯博客");
+  if (!article) throw notFound("digest_not_found", "这一天没有资讯博客");
+  const record = await digestRow(db, article.published_on);
+  const row = {
+    digest_date: article.published_on,
+    slug: article.slug,
+    title: article.title,
+    item_count: record?.item_count ?? null,
+    note: record?.note ?? null,
+    status: record?.status ?? "synced",
+    generated_at: record?.generated_at ?? null
+  };
   const items = await all(
     db,
     `SELECT rank_no, url, title, site_id, site_name, site_rank, mention_count, summary, reason, published_at

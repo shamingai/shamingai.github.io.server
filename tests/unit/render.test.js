@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { digestSlug, digestSummary, digestTitle, renderDigest } from "../../src/services/render.js";
+import { digestSlug, digestSummary, digestTitle, renderDigestBody } from "../../src/services/render.js";
 
 const items = [
   {
@@ -27,36 +27,29 @@ const items = [
   }
 ];
 
-test("renderDigest writes front-matter directives accepted by the content parser", () => {
-  const markdown = renderDigest({ date: "2026-10-18", title: digestTitle("2026-10-18"), summary: "今日热点：第一条", items });
-  const lines = markdown.split("\n");
-  assert.equal(lines[0], "2026-10-18 今日热门前十资讯");
-  assert.equal(lines[2], "date: 2026-10-18");
-  assert.equal(lines[3], "category: 资讯");
-  assert.match(markdown, /## 1\. 第一条/);
-  assert.match(markdown, /- 来源：微博热搜 第 1 名，共 2 个站点提及/);
-  assert.match(markdown, /- 链接：\[原文\]\(https:\/\/a\.com\/1\)/);
-  assert.match(markdown, /\*\*推荐理由\*\*：理由二/);
-  assert.match(markdown, /共收录 2 条/);
+test("renderDigestBody writes an article body without front-matter directives", () => {
+  const body = renderDigestBody({ items });
+  assert.doesNotMatch(body, /^date: /m);
+  assert.doesNotMatch(body, /^category: /m);
+  assert.match(body, /共收录 2 条/);
+  assert.match(body, /## 1\. 第一条/);
+  assert.match(body, /- 来源：微博热搜 第 1 名，共 2 个站点提及/);
+  assert.match(body, /- 链接：\[原文\]\(https:\/\/a\.com\/1\)/);
+  assert.match(body, /\*\*推荐理由\*\*：理由二/);
 });
 
-test("renderDigest includes notes and regeneration notice", () => {
-  const markdown = renderDigest({
-    date: "2026-10-18",
-    title: digestTitle("2026-10-18"),
-    summary: "s",
-    items,
-    note: "本次只收录 2 条",
-    regenerated: true
-  });
-  assert.match(markdown, /> 本次只收录 2 条/);
-  assert.match(markdown, /重新生成版本/);
+test("renderDigestBody includes notes and regeneration notice", () => {
+  const body = renderDigestBody({ items, note: "本次只收录 2 条", regenerated: true });
+  assert.match(body, /> 本次只收录 2 条/);
+  assert.match(body, /重新生成版本/);
 });
 
 test("slug and summary helpers", () => {
   assert.equal(digestSlug("2026-10-18"), "daily-2026-10-18");
-  assert.equal(digestSummary("2026-10-18", []), "2026-10-18 的今日热门前十资讯。");
-  const summary = digestSummary("2026-10-18", items);
+  assert.equal(digestSlug("2026-10-18", "tech"), "daily-2026-10-18-tech");
+  assert.equal(digestTitle("2026-10-18"), "2026-10-18 今日热门前十资讯");
+  assert.equal(digestSummary([]), "今日热门前十资讯");
+  const summary = digestSummary(items);
   assert.match(summary, /今日热点：第一条/);
   assert.match(summary, /2 个来源站点/);
 });

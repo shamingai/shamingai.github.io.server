@@ -202,6 +202,9 @@ test("GET /api/digests lists digests newest first and GET /api/digests/:date ret
 
   const detail = (await app.inject({ method: "GET", url: "/api/digests/2026-10-18" })).json();
   assert.equal(detail.slug, "daily-2026-10-18");
+  assert.equal(detail.status, "generated");
+  assert.equal(detail.item_count, 2);
+  assert.ok(detail.generated_at, "详情应带出生成时间");
   assert.deepEqual(detail.items.map((item) => [item.rank, item.url]), [
     [1, "https://alpha.test/1"],
     [2, "https://beta.test/2"]
@@ -213,6 +216,41 @@ test("GET /api/digests lists digests newest first and GET /api/digests/:date ret
   const missing = await app.inject({ method: "GET", url: "/api/digests/1999-01-01" });
   assert.equal(missing.statusCode, 404);
   assert.equal(missing.json().error.code, "digest_not_found");
+  await app.close();
+});
+
+test("GET /api/digests lists a digest that only exists in articles (synced from markdown, no digests row)", async () => {
+  const { db } = await digestFixture();
+  await insertArticle(db, {
+    slug: "daily-2026-10-23",
+    kind: "digest",
+    title: "2026-10-23 今日热门前十资讯",
+    summary: "今日热点",
+    body: "## 1. 甲\n\n## 2. 乙\n\n## 3. 丙",
+    category: "资讯",
+    publishedOn: "2026-10-23"
+  });
+  const { app } = await createTestApp({ db });
+
+  const list = (await app.inject({ method: "GET", url: "/api/digests" })).json();
+  assert.equal(list.total, 2);
+  assert.equal(list.page_count, 1);
+  assert.deepEqual(list.items.map((item) => [item.date, item.slug, item.status, item.item_count]), [
+    ["2026-10-23", "daily-2026-10-23", "synced", null],
+    ["2026-10-18", "daily-2026-10-18", "generated", 2]
+  ]);
+
+  const home = (await app.inject({ method: "GET", url: "/api/posts?kind=digest&page_size=50" })).json();
+  assert.deepEqual(
+    home.items.map((item) => item.slug),
+    list.items.map((item) => item.slug),
+    "首页资讯与资讯页应是同一批文章"
+  );
+
+  const detail = (await app.inject({ method: "GET", url: "/api/digests/2026-10-23" })).json();
+  assert.equal(detail.slug, "daily-2026-10-23");
+  assert.equal(detail.status, "synced");
+  assert.deepEqual(detail.items, []);
   await app.close();
 });
 
@@ -393,8 +431,22 @@ test("POST /api/digests returns 201, 409 on duplicates and 200 on regenerate", a
   assert.equal(again.json().status, "replaced");
 
   const stored = (await app.inject({ method: "GET", url: "/api/digests" })).json();
-  assert.equal(stored.items[0].date, "2026-10-20");
-  assert.equal(stored.items[0].status, "replaced");
+  // 资讯列表以 articles 为准，所以额外把当天的资讯正文写进 articles，再看状态是否取到 digests 的明细。
+  await insertArticle(db, {
+    slug: "daily-2026-10-20",
+    kind: "digest",
+    title: "2026-10-20 资讯",
+    summary: "今日热门前十",
+    body: "## 1. 甲\n\n正文",
+    category: "资讯",
+    publishedOn: "2026-10-20"
+  });
+  const withContent = (await app.inject({ method: "GET", url: "/api/digests" })).json();
+  assert.equal(withContent.items[0].date, "2026-10-20");
+  assert.equal(withContent.items[0].status, "replaced");
+  assert.equal(withContent.items[0].item_count, 10);
+  assert.equal(withContent.items[0].slug, "daily-2026-10-20");
+  assert.equal(stored.items.some((item) => item.date === "2026-10-20"), false);
 
   const invalidDate = await app.inject({ method: "POST", url: "/api/digests", headers: auth, payload: { date: "2026-13-01" } });
   assert.equal(invalidDate.statusCode, 400);

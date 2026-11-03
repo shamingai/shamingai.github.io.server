@@ -151,6 +151,8 @@ const GENERATED_COLUMN = /^\s*(\w+)\s+([\w()]+)\s+AS\s*\((.*)\)\s*STORED\s*,?\s*
 // 生成列降级为普通列并用触发器赋值，再收拾因此留下的多余逗号与空行。
 export function toSqliteStatements(sql) {
   return splitStatements(sql).flatMap((statement) => {
+    // 迁移文件里写 MySQL 的 ALTER TABLE ... MODIFY，退到 SQLite 时这类语句没有等价写法（001 建表时列已经允许空），直接跳过。
+    if (/^\s*ALTER\s+TABLE\s+\w+\s+MODIFY\s+COLUMN/i.test(statement.replace(/^\s*--.*$/gm, "").trimStart())) return [];
     const tables = /^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/i.exec(statement);
     if (!tables) return [statement.trim()];
     const lines = statement.split("\n");
@@ -363,10 +365,13 @@ export function toSqliteDialect(sql, params) {
   let values = params;
   const head = INSERT_HEAD.exec(text);
   if (head) {
+    // VALUES 后面的行别名（"AS incoming"）只有 MySQL 用，SQLite 不认，先剥掉再按列重排。
+    text = `${head[0].replace(/\)\s*VALUES\s*$/, ") VALUES ").replace(/\s*AS\s+incoming\s*$/i, "")}${text.slice(head[0].length)}`;
     const [, table, columnList, body] = head;
     const tailMatch = UPSERT_TAIL.exec(body);
     const valuesText = tailMatch ? tailMatch[1] : body;
     const updates = tailMatch ? tailMatch[2].replace(/;\s*$/, "").trim() : "";
+    // SQL 里没有冲突更新子句时也照样重排：值和列按位置对应，alias 形式的 VALUES 直接返回会把占位符漏给驱动。
     if (!updates) return [text, values];
     const insert = INSERT_START.exec(text)[0];
     const columns = splitEntries(columnList).map((column) => column.trim());

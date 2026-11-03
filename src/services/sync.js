@@ -103,6 +103,15 @@ function tagsOf(post) {
   return ["资讯", ...suffix.split(/[,，、·]/).map((tag) => tag.trim()).filter(Boolean)];
 }
 
+// 资讯 Markdown 的条目形态是 "## 1. 标题" 的小节。生成流程按 rank 条数记录 item_count，
+// 这里按同样的规则数小节，让两条写入路径算出的条目数一致。
+function countDigestItems(body) {
+  return String(body ?? "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .filter((line) => /^##\s+\d+\.\s+\S/.test(line.trim())).length;
+}
+
 async function upsertArticle(db, article, now) {
   const words = bodyText(article.body).replace(/\s+/g, "").length;
   await run(
@@ -151,6 +160,7 @@ export async function syncContent(db, siteRepoDir, now = new Date().toISOString(
   const syncedOn = todayInShanghai(new Date(now));
   return transaction(db, async (db) => {
     const fromRepository = new Set();
+    const digests = new Map();
     for (const raw of posts) {
       const post = parsePost(raw.id, raw.text);
       const summary = post.directives.summary ?? summaryOf(post.body);
@@ -172,6 +182,13 @@ export async function syncContent(db, siteRepoDir, now = new Date().toISOString(
         now
       );
       fromRepository.add(post.slug);
+      if (post.kind === "digest") {
+        digests.set(post.slug, {
+          date: post.directives.date ?? syncedOn,
+          title: post.title,
+          itemCount: countDigestItems(post.body)
+        });
+      }
     }
 
     const existingDigests = new Set((await all(db, "SELECT slug FROM digests")).map((row) => row.slug));
@@ -180,7 +197,10 @@ export async function syncContent(db, siteRepoDir, now = new Date().toISOString(
       await run(db, "DELETE FROM articles WHERE slug = ?", [row.slug]);
     }
     for (const slug of existingDigests) {
-      if (!fromRepository.has(slug)) await run(db, "DELETE FROM digests WHERE slug = ?", [slug]);
+      // 资讯正文以数据库为准，md 文件只是历史遗留（还能被同步进来的 daily-*.md）。
+      // 所以这里不再"文件里没有就删"：库里已有的资讯保留不动，只清掉从文件导入、文件删掉后留下的孤儿记录。
+      if (fromRepository.has(slug)) continue;
+      await run(db, "DELETE FROM digests WHERE slug = ?", [slug]);
     }
 
     for (const article of site.articles ?? []) {
@@ -201,6 +221,18 @@ export async function syncContent(db, siteRepoDir, now = new Date().toISOString(
           tags: article.tags ?? []
         },
         now
+      );
+    }
+
+    for (const [slug, digest] of digests) {
+      // digests 表是资讯的抓取明细。从文件同步进来的资讯没有生成记录，这里补一行，
+      // 让资讯页的条目数与首页/正文一致；已经有记录的（生成流程写的）保持原样，不再回写文件路径。
+      // 状态写 'generated' 是因为 digests.status 只允许 generated / replaced / failed，不新增取值。
+      if (await get(db, "SELECT 1 AS found FROM digests WHERE slug = ?", [slug])) continue;
+      await run(
+        db,
+        "INSERT INTO digests (digest_date, slug, title, item_count, note, status, generated_at) VALUES (?, ?, ?, ?, ?, 'generated', ?)",
+        [digest.date, slug, digest.title, digest.itemCount, null, now]
       );
     }
 

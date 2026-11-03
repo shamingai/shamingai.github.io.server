@@ -59,6 +59,35 @@ test("syncContent imports posts, digests and legacy articles", async () => {
   );
   assert.equal((await get(db, "SELECT COUNT(*) AS n FROM headings WHERE slug = 'rec-001'")).n, 1);
   assert.equal((await get(db, "SELECT value FROM site_meta WHERE meta_key = 'about'")).value, "关于我");
+  const digestRow = await get(db, "SELECT digest_date, slug, title, item_count, markdown_path FROM digests WHERE slug = 'daily-2026-10-18'");
+  assert.deepEqual({ ...digestRow }, {
+    digest_date: "2026-10-18",
+    slug: "daily-2026-10-18",
+    title: "2026-10-18 今日热门前十资讯",
+    item_count: 1,
+    markdown_path: null
+  });
+});
+
+test("syncContent keeps the existing digest record untouched when a stale markdown is re-synced", async () => {
+  const dir = await fixtureRepo();
+  const db = await createTestDatabase();
+  const generatedAt = "2026-10-18T16:00:00.000Z";
+  const { run } = await import("../../src/db.js");
+  await run(
+    db,
+    "INSERT INTO digests (digest_date, slug, title, item_count, note, status, generated_at, markdown_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ["2026-10-18", "daily-2026-10-18", "旧标题", 9, "备注", "replaced", generatedAt, "blog/content/posts/daily-2026-10-18.md"]
+  );
+  await syncContent(db, dir);
+  const row = await get(db, "SELECT title, item_count, status, generated_at, note FROM digests WHERE slug = 'daily-2026-10-18'");
+  assert.deepEqual({ ...row }, {
+    title: "旧标题",
+    item_count: 9,
+    status: "replaced",
+    generated_at: generatedAt,
+    note: "备注"
+  });
 });
 
 test("syncContent replaces an article whose markdown changed", async () => {

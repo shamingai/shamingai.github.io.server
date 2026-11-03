@@ -144,7 +144,6 @@ export async function adminRoutes(app, { db, config, deps }) {
       item_count: result.item_count,
       note: result.note,
       status: result.status,
-      markdown_path: result.markdown_path,
       site_results: result.site_results,
       dropped: result.dropped
     });
