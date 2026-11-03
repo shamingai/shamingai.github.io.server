@@ -38,6 +38,23 @@ test("renderDigestBody writes an article body without front-matter directives", 
   assert.match(body, /\*\*推荐理由\*\*：理由二/);
 });
 
+test("renderDigestBody names the other sites that picked the same item", () => {
+  const body = renderDigestBody({
+    items: [
+      {
+        ...items[0],
+        sources: [
+          { siteId: "weibo-hot", siteName: "微博热搜" },
+          { siteId: "zhihu-hot", siteName: "知乎热榜" },
+          { siteId: "baidu-board", siteName: "百度热搜" }
+        ]
+      },
+      items[1]
+    ]
+  });
+  assert.match(body, /- 来源：微博热搜 第 1 名，共 2 个站点提及；另见 知乎热榜、百度热搜/);
+});
+
 test("renderDigestBody includes notes and regeneration notice", () => {
   const body = renderDigestBody({ items, note: "本次只收录 2 条", regenerated: true });
   assert.match(body, /> 本次只收录 2 条/);
@@ -47,8 +64,11 @@ test("renderDigestBody includes notes and regeneration notice", () => {
 test("slug and summary helpers", () => {
   assert.equal(digestSlug("2026-10-18"), "daily-2026-10-18");
   assert.equal(digestSlug("2026-10-18", "tech"), "daily-2026-10-18-tech");
-  assert.equal(digestTitle("2026-10-18"), "2026-10-18 每日热门前十");
-  assert.equal(digestSummary([]), "热门前十");
+  assert.equal(digestTitle("2026-10-18"), "2026-10-18 每日热搜");
+  assert.equal(digestTitle("2026-10-18", { label: "每日热搜" }), "2026-10-18 每日热搜");
+  assert.equal(digestTitle("2026-10-18", { label: "财经快讯" }), "2026-10-18 每日财经快讯");
+  assert.equal(digestTitle("2026-10-18", { label: "AI 安全" }), "2026-10-18 每日 AI 安全");
+  assert.equal(digestSummary([]), "每日热搜");
   const summary = digestSummary(items);
   assert.match(summary, /今日热点：第一条/);
   assert.match(summary, /2 个来源站点/);

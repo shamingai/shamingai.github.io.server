@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as cheerio from "cheerio";
 import { adapters } from "../../src/sources/generic.js";
 import { linksFrom } from "../../src/sources/generic.js";
-import { DEFAULT_SITES, seedSites, upgradeSiteUrls } from "../../src/sources/index.js";
+import { DEFAULT_SITES, applySeedState, seedSites, upgradeSiteUrls } from "../../src/sources/index.js";
 import { all, run as query } from "../../src/db.js";
 import { createTestDatabase } from "../helpers.js";
 
@@ -107,6 +107,28 @@ test("upgradeSiteUrls replaces retired hot-list urls once", async () => {
   db.raw.close();
 });
 
+test("upgradeSiteUrls keeps a retired url when another site already owns the new one", async () => {
+  const db = await createTestDatabase();
+  const insert = (id, url, adapter) =>
+    query(
+      db,
+      "INSERT INTO source_sites (id, name, home_url, hot_list_url, adapter, weight, max_candidates, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 20, 1, ?, ?)",
+      [id, id, `https://${id}.test/`, url, adapter, "2026-10-01T00:00:00Z", "2026-10-01T00:00:00Z"]
+    );
+  const site = DEFAULT_SITES.find((item) => item.id === "zhihu-hot");
+  await insert("zhihu-hot", "https://www.zhihu.com/api/v3/feed/topstory/hot-lists/total?limit=50", "rss");
+  await insert("zhihu-copy", site.hot_list_url, "rss");
+  assert.equal(await upgradeSiteUrls(db, [site]), 1);
+  const [row] = await all(db, "SELECT hot_list_url, adapter, audience FROM source_sites WHERE id = ?", ["zhihu-hot"]);
+  assert.equal(row.hot_list_url, "https://www.zhihu.com/api/v3/feed/topstory/hot-lists/total?limit=50");
+  assert.equal(row.adapter, site.adapter);
+  assert.equal(row.audience, site.audience ?? "hot");
+  const [copy] = await all(db, "SELECT hot_list_url, adapter FROM source_sites WHERE id = ?", ["zhihu-copy"]);
+  assert.equal(copy.hot_list_url, site.hot_list_url);
+  assert.equal(copy.adapter, "rss");
+  db.raw.close();
+});
+
 test("seedSites leaves existing rows alone when run twice", async () => {
   // 种子用 INSERT ... SELECT ... WHERE NOT EXISTS，冲突时什么都不改：SQLite 那侧不会把它折成 INSERT OR REPLACE，
   // 所以不管走哪个驱动，都只该补新增站点、保留库里的人工调整。
@@ -117,5 +139,25 @@ test("seedSites leaves existing rows alone when run twice", async () => {
   assert.equal(await seedSites(db, sites), 0);
   const [row] = await all(db, "SELECT name FROM source_sites WHERE id = ?", ["alpha"]);
   assert.equal(row.name, "甲站（改）");
+  // 别的站点已经占着同一个热榜接口时跳过，不再撞唯一键。
+  const twin = [{ id: "beta", name: "乙站", home_url: "https://beta.test/", hot_list_url: "https://alpha.test/hot", adapter: "links" }];
+  assert.equal(await seedSites(db, twin), 0);
+  assert.equal((await all(db, "SELECT id FROM source_sites")).length, 1);
+  db.raw.close();
+});
+
+test("applySeedState only switches off the sites the seed marks disabled", async () => {
+  const db = await createTestDatabase();
+  const sites = [
+    { id: "alpha", name: "甲站", home_url: "https://alpha.test/", hot_list_url: "https://alpha.test/hot", adapter: "links" },
+    { id: "beta", name: "乙站", home_url: "https://beta.test/", hot_list_url: "https://beta.test/hot", adapter: "links", enabled: 0 }
+  ];
+  await seedSites(db, sites);
+  await query(db, "UPDATE source_sites SET enabled = 1");
+  assert.equal(await applySeedState(db, sites), 1);
+  const rows = (await all(db, "SELECT id, enabled FROM source_sites ORDER BY id")).map(({ id, enabled }) => ({ id, enabled }));
+  assert.deepEqual(rows, [{ id: "alpha", enabled: 1 }, { id: "beta", enabled: 0 }]);
+  // 已经停用的不再写第二次。
+  assert.equal(await applySeedState(db, sites), 0);
   db.raw.close();
 });

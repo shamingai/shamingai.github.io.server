@@ -175,18 +175,21 @@ export const DEFAULT_SITES = [
     // POST 接口，请求体在 tech.js 的 POST_BODIES 里按需生成。
     hot_list_url: "https://gateway.36kr.com/api/mis/nav/newsflash/flow",
     adapter: "36kr-newsflash",
-    audience: "flash",
-    max_candidates: 20
+    audience: "finance",
+    max_candidates: 20,
+    // 和 36kr-news 共用同一个快讯接口，只留一个来源；库里没有 36kr-news 时迁移会删掉这一条，种子会补回来并保持停用。
+    enabled: 0
   },
   {
+    // 原「快讯」品类已并入财经：这两条和 eastmoney-fast、10jqka-push 是同一个接口，停用免得重复计数。
     id: "eastmoney-fast-flash",
     name: "东方财富快讯",
     home_url: "https://finance.eastmoney.com/",
-    // 和财经品类同一个接口，快讯品类单独计一条来源。
     hot_list_url: "https://np-listapi.eastmoney.com/comm/web/getFastNewsList?client=web&biz=web_724&fastColumn=102&sortEnd=&pageSize=20&req_trace=1",
     adapter: "eastmoney-fast-news",
-    audience: "flash",
-    max_candidates: 20
+    audience: "finance",
+    max_candidates: 20,
+    enabled: 0
   },
   {
     id: "10jqka-push-flash",
@@ -194,8 +197,9 @@ export const DEFAULT_SITES = [
     home_url: "https://news.10jqka.com.cn/",
     hot_list_url: "https://news.10jqka.com.cn/tapp/news/push/stock/?page=1&tag=&track=website&pagesize=20",
     adapter: "10jqka-push",
-    audience: "flash",
-    max_candidates: 20
+    audience: "finance",
+    max_candidates: 20,
+    enabled: 0
   },
   {
     id: "huxiu-flash",
@@ -203,8 +207,10 @@ export const DEFAULT_SITES = [
     home_url: "https://www.huxiu.com/",
     hot_list_url: "https://api-article.huxiu.com/web/article/articleList?platform=www&pageSize=30",
     adapter: "huxiu-list",
-    audience: "flash",
-    max_candidates: 20
+    audience: "finance",
+    max_candidates: 20,
+    // 和 huxiu-article 共用同一个文章列表接口，只留一个来源。
+    enabled: 0
   },
   {
     id: "techcrunch",
@@ -274,33 +280,57 @@ export async function upgradeSiteUrls(db, sites = DEFAULT_SITES, now = new Date(
     const [row] = await all(db, "SELECT hot_list_url, audience FROM source_sites WHERE id = ?", [site.id]);
     if (!row) continue;
     // 地址只动仍是已退役地址的行，人工自定义过的地址保持原样；品类按默认值对齐，旧库里一律是 hot。
-    const urlRetired = RETIRED_HOT_LIST_URLS.has(row.hot_list_url);
+    // 新地址已经被别的站点占着时只改 adapter：热榜接口的唯一键照样满足。
     const audience = site.audience ?? "hot";
-    if (!urlRetired && row.audience === audience) continue;
-    const sets = ["audience = ?", "updated_at = ?"];
-    const params = [audience, now];
-    if (urlRetired) {
-      sets.unshift("hot_list_url = ?", "adapter = ?");
-      params.unshift(site.hot_list_url, site.adapter);
+    const retired = RETIRED_HOT_LIST_URLS.has(row.hot_list_url);
+    const taken = retired && (await all(db, "SELECT 1 FROM source_sites WHERE id <> ? AND hot_list_url = ?", [site.id, site.hot_list_url])).length > 0;
+    const movesUrl = retired && !taken;
+    const sets = [];
+    const params = [];
+    if (movesUrl) {
+      sets.push("hot_list_url = ?", "adapter = ?");
+      params.push(site.hot_list_url, site.adapter);
+    } else if (row.adapter !== site.adapter) {
+      sets.push("adapter = ?");
+      params.push(site.adapter);
     }
-    params.push(site.id);
-    const result = await run(db, `UPDATE source_sites SET ${sets.join(", ")} WHERE id = ?`, params);
+    if (row.audience !== audience) {
+      sets.push("audience = ?");
+      params.push(audience);
+    }
+    if (!sets.length) continue;
+    sets.push("updated_at = ?");
+    const result = await run(db, `UPDATE source_sites SET ${sets.join(", ")} WHERE id = ?`, [...params, now, site.id]);
     updated += Number(result?.changes ?? 0);
   }
   await setMeta(db, `revision:${SOURCE_URL_REVISION}`, now);
   return updated;
 }
 
+// 默认站点清单里 enabled 为 0 的（快讯、与同接口正式站点重复的来源）每次启动都对一次：
+// 迁移会删掉其中一部分，旧库在迁移前又可能被手工改过，这里保证「迁移结果」和「默认设定」一致。
+// 只写 enabled 这一列，不动地址和品类，人工调过的地址、权重照旧。
+export async function applySeedState(db, sites = DEFAULT_SITES) {
+  let changed = 0;
+  for (const site of sites) {
+    if (site.enabled !== 0) continue;
+    const result = await run(db, "UPDATE source_sites SET enabled = 0 WHERE id = ? AND enabled <> 0", [site.id]);
+    changed += Number(result?.changes ?? 0);
+  }
+  return changed;
+}
+
 export async function seedSites(db, sites = DEFAULT_SITES, now = new Date().toISOString()) {
   if (!sites.length) return 0;
   const before = Number((await all(db, "SELECT COUNT(*) AS n FROM source_sites"))[0].n);
-  // 只补库里没有的站点，命中冲突时什么都不改：SQLite 那侧才不必把 ON DUPLICATE KEY UPDATE 折成 INSERT OR REPLACE。
+  // 只补库里没有的站点：id 已存在、或已有站点占着同一个热榜接口都不补，后者会让唯一键冲突。
+  // 命中冲突时什么都不改：SQLite 那侧才不必把 ON DUPLICATE KEY UPDATE 折成 INSERT OR REPLACE。
   for (const site of sites) {
     await run(
       db,
       `INSERT INTO source_sites (id, name, home_url, hot_list_url, adapter, weight, max_candidates, audience, enabled, created_at, updated_at)
        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-       WHERE NOT EXISTS (SELECT 1 FROM source_sites WHERE id = ?)`,
+       WHERE NOT EXISTS (SELECT 1 FROM source_sites WHERE id = ? OR hot_list_url = ?)`,
       [
         site.id,
         site.name,
@@ -313,7 +343,8 @@ export async function seedSites(db, sites = DEFAULT_SITES, now = new Date().toIS
         site.enabled === 0 ? 0 : 1,
         now,
         now,
-        site.id
+        site.id,
+        site.hot_list_url
       ]
     );
   }

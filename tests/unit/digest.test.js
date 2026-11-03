@@ -68,7 +68,7 @@ test("generateDigest writes the article, digest and picked items to the database
   assert.equal(result.markdown_path, undefined);
 
   const article = await get(db, "SELECT title, kind, category_path, published_on, body FROM articles WHERE slug = 'daily-2026-10-18'");
-  assert.equal(article.title, "2026-10-18 每日热门前十");
+  assert.equal(article.title, "2026-10-18 每日热搜");
   assert.equal(article.kind, "digest");
   assert.equal(article.category_path, "资讯");
   assert.equal(article.published_on, "2026-10-18");
@@ -82,8 +82,8 @@ test("generateDigest writes the article, digest and picked items to the database
   );
   const digest = await get(db, "SELECT slug, item_count, status, markdown_path FROM digests WHERE digest_date = '2026-10-18'");
   assert.deepEqual({ ...digest }, { slug: "daily-2026-10-18", item_count: 3, status: "generated", markdown_path: null });
-  assert.equal((await get(db, "SELECT COUNT(*) AS n FROM picked_items WHERE digest_date = '2026-10-18'")).n, 3);
-  assert.equal((await get(db, "SELECT url FROM picked_items WHERE digest_date = '2026-10-18' AND rank_no = 1")).url, "https://alpha.test/1");
+  assert.equal((await get(db, "SELECT COUNT(*) AS n FROM picked_items WHERE slug = 'daily-2026-10-18'")).n, 3);
+  assert.equal((await get(db, "SELECT url FROM picked_items WHERE slug = 'daily-2026-10-18' AND rank_no = 1")).url, "https://alpha.test/1");
 
   const run = await getRun(db, result.run_id);
   assert.equal(run.outcome, "created");
@@ -157,7 +157,7 @@ test("generateDigest with regenerate replaces the existing digest", async () => 
   const result = await generateDigest(db, config, { date: "2026-10-18", deps, regenerate: true });
   assert.equal(result.status, "replaced");
   assert.equal((await get(db, "SELECT COUNT(*) AS n FROM digests")).n, 1);
-  assert.equal((await get(db, "SELECT COUNT(*) AS n FROM picked_items WHERE digest_date = '2026-10-18'")).n, 3);
+  assert.equal((await get(db, "SELECT COUNT(*) AS n FROM picked_items WHERE slug = 'daily-2026-10-18'")).n, 3);
   assert.equal((await get(db, "SELECT COUNT(*) AS n FROM articles WHERE slug = 'daily-2026-10-18'")).n, 1);
   assert.equal((await get(db, "SELECT COUNT(*) AS n FROM headings WHERE slug = 'daily-2026-10-18'")).n, 3);
   assert.ok((await get(db, "SELECT generated_at FROM digests WHERE digest_date = '2026-10-18'")).generated_at >= first.generated_at);
@@ -225,7 +225,7 @@ test("generateDigest caps how many items one site can fill", async () => {
     }));
   const result = await generateDigest(db, config, { date: "2026-10-18", deps });
   assert.equal(result.item_count, 6);
-  const bySite = await all(db, "SELECT site_id, COUNT(*) AS n FROM picked_items WHERE digest_date = '2026-10-18' GROUP BY site_id ORDER BY site_id");
+  const bySite = await all(db, "SELECT site_id, COUNT(*) AS n FROM picked_items WHERE slug = 'daily-2026-10-18' GROUP BY site_id ORDER BY site_id");
   assert.deepEqual(bySite.map((row) => Number(row.n)), [2, 2, 2]);
 });
 

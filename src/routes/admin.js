@@ -23,6 +23,12 @@ export function toSite(row) {
   };
 }
 
+// 热榜接口在 source_sites 上有唯一键：同一个地址只能归一个站点，否则重复采集同一条热榜。
+async function assertUrlFree(db, hotListUrl, id) {
+  if (!(await get(db, "SELECT 1 AS found FROM source_sites WHERE hot_list_url = ? AND id <> ?", [hotListUrl, id]))) return;
+  throw conflict("site_url_exists", `热榜接口 ${hotListUrl} 已经被别的来源站点使用`);
+}
+
 async function readSite(db, id) {
   const row = await get(db, "SELECT * FROM source_sites WHERE id = ?", [id]);
   if (!row) throw notFound("site_not_found", "来源站点不存在");
@@ -106,6 +112,7 @@ export async function adminRoutes(app, { db, config, deps }) {
     if (await get(db, "SELECT 1 AS found FROM source_sites WHERE id = ?", [site.id])) {
       throw conflict("site_exists", `来源站点 ${site.id} 已存在`);
     }
+    await assertUrlFree(db, site.hot_list_url, site.id);
     const now = new Date().toISOString();
     await run(
       db,
@@ -131,6 +138,7 @@ export async function adminRoutes(app, { db, config, deps }) {
   app.patch("/api/source-sites/:id", async (request) => {
     const existing = await readSite(db, request.params.id);
     const merged = writeSite(db, request.body ?? {}, existing);
+    await assertUrlFree(db, merged.hot_list_url, existing.id);
     const { sql, values } = compactSql({ ...merged, updated_at: new Date().toISOString() });
     await run(db, `UPDATE source_sites SET ${sql} WHERE id = ?`, [...values, existing.id]);
     return toSite(await readSite(db, existing.id));

@@ -1,9 +1,8 @@
-import { mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import mysql from "mysql2/promise";
 
-const MIGRATIONS_DIR = new URL("../migrations/", import.meta.url).pathname;
 const SCHEMA = new URL("../migrations/001_init.sql", import.meta.url).pathname;
 const PRIMARY_KEYS = new Map();
 
@@ -65,13 +64,23 @@ export async function run(db, sql, params = []) {
   assertParams(sql, params);
   if (db.driver === "mysql") {
     const [statement, values] = withLimit(sql, params);
-    const [result] = await db.raw.query(statement, values);
-    return { changes: result?.affectedRows ?? 0, lastId: result?.insertId ?? null };
+    // TEMPORARY TABLE 只属于建它的那条连接（别的连接上连表都看不到），走连接池的 query 会建在随机连接上；
+    // 这里固定借一条连接，跑完把建过临时表的连接关掉，不让它带着临时表回到连接池。
+    const temporary = TEMPORARY.test(statement);
+    const connection = temporary ? await db.raw.getConnection() : null;
+    try {
+      const [result] = await (connection ?? db.raw).query(statement, values);
+      return { changes: result?.affectedRows ?? 0, lastId: result?.insertId ?? null };
+    } finally {
+      if (connection) connection.destroy();
+    }
   }
   const [statement, values] = toSqliteDialect(sql, params);
   const result = db.raw.prepare(statement).run(...values);
   return { changes: Number(result.changes ?? 0), lastId: Number(result.lastInsertRowid ?? 0) };
 }
+
+const TEMPORARY = /^\s*(?:CREATE|DROP)\s+TEMPORARY\s+TABLE/i;
 
 export async function all(db, sql, params = []) {
   assertParams(sql, params);
@@ -116,17 +125,29 @@ export async function transaction(db, work) {
   }
 }
 
+// 迁移按文件名顺序执行。两种方言的写法没法用改写规则统一时，再在 migrations/mysql/ 放一份同名文件：
+// 那里的是最终写法，不再经过 toMySqlStatements 转换；没有就来 sqlite 的写法改写过去。记录名始终是根目录的文件名。
+export function migrationFiles(driver) {
+  const root = new URL("../migrations/", import.meta.url).pathname;
+  const specific = path.join(root, "mysql");
+  return readdirSync(root)
+    .filter((name) => name.endsWith(".sql"))
+    .sort()
+    .map((name) => {
+      const final = path.join(specific, name);
+      return { name, sql: readFileSync(existsSync(final) && driver === "mysql" ? final : path.join(root, name), "utf8") };
+    });
+}
+
 export async function migrate(db) {
   await run(
     db,
     "CREATE TABLE IF NOT EXISTS schema_migrations (name VARCHAR(191) PRIMARY KEY, applied_at VARCHAR(32) NOT NULL)"
   );
   const applied = new Set((await all(db, "SELECT name FROM schema_migrations")).map((row) => row.name));
-  const files = readdirSync(MIGRATIONS_DIR).filter((name) => name.endsWith(".sql")).sort();
   const fresh = [];
-  for (const name of files) {
+  for (const { name, sql } of migrationFiles(db.driver)) {
     if (applied.has(name)) continue;
-    const sql = readFileSync(path.join(MIGRATIONS_DIR, name), "utf8");
     const statements = db.driver === "mysql" ? toMySqlStatements(sql) : toSqliteStatements(sql);
     try {
       await transaction(db, async (scoped) => {
@@ -134,35 +155,66 @@ export async function migrate(db) {
         await run(scoped, "INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)", [name, new Date().toISOString()]);
       });
     } catch (error) {
+      await dropMigrateScratch(db, db.driver === "mysql" ? toMySqlStatements(sql) : []);
       throw new Error(`migration ${name} failed: ${error.message}`);
     }
+    await dropMigrateScratch(db, db.driver === "mysql" ? statements : []);
     fresh.push(name);
   }
   return fresh;
 }
 
+export async function dropMigrateScratch(db, statements) {
+  const scratch = statements.filter((statement) => /^\s*CREATE\s+TEMPORARY\s+TABLE/i.test(statement)).flatMap((statement) => {
+    const name = /^\s*CREATE\s+TEMPORARY\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/i.exec(statement);
+    return name ? [`SHOW CREATE TEMPORARY TABLE \`${name[1]}\``] : [];
+  });
+  if (db.driver !== "mysql" || scratch.length === 0) return;
+  // 临时表建在事务用的那条连接上：它只对这条连接可见，交回连接池后可能被后面别的请求拿到。
+  let used = false;
+  try {
+    const connection = await db.raw.getConnection();
+    try {
+      for (const probe of scratch) {
+        const [rows] = await connection.query(probe);
+        if (rows.length) used = true;
+      }
+    } finally {
+      if (used) connection.destroy();
+      else connection.release();
+    }
+  } catch {
+    // 清理失败不影响迁移结果：临时表随连接销毁。
+  }
+}
+
 const SQLITE_UNSUPPORTED = [
   /^\s*KEY\s+\w+\s*\(.*\)\s*,?\s*$/i
 ];
-const UNIQUE_KEY = /^\s*UNIQUE\s+KEY\s+(\w+)\s*\(([^()]*)\)\s*,?\s*$/i;
+// 列清单里可能出现前缀长度（hot_list_url(255)），所以括号内允许再嵌一层括号。
+const KEY_COLUMNS = String.raw`\(\s*\w+\s*(?:\(\s*\d+\s*\))?(?:\s*,\s*\w+\s*(?:\(\s*\d+\s*\))?)*\)`;
+const UNIQUE_KEY = new RegExp(String.raw`^\s*UNIQUE\s+KEY\s+(\w+)\s*(${KEY_COLUMNS})\s*,?\s*$`, "i");
 // "col TYPE AS (表达式) STORED" → SQLite 用普通列 + 触发器维护同一个值。
 const GENERATED_COLUMN = /^\s*(\w+)\s+([\w()]+)\s+AS\s*\((.*)\)\s*STORED\s*,?\s*$/i;
 
 // 迁移按 MySQL 8 写一份；SQLite 回退时抹掉它不认识的内联索引，唯一键改写成独立索引，
 // 生成列降级为普通列并用触发器赋值，再收拾因此留下的多余逗号与空行。
-// 这类 ALTER 在 SQLite 上没有对应写法（001 的建表语句已经是最终形态），退到 SQLite 时直接跳过。
+// 这些 ALTER 是专门给旧库升级的：全新库由 001 直接建好最终形态（002 里相同的列已在建表语句里），
+// SQLite 上没有对应写法或旧库用不上，退到 SQLite 时直接跳过。
 const MYSQL_ONLY_ALTER = [
   /^ALTER\s+TABLE\s+\w+\s+MODIFY\s+COLUMN/i,
   /^ALTER\s+TABLE\s+\w+\s+(?:DROP|ADD)\s+PRIMARY\s+KEY/i,
   /^ALTER\s+TABLE\s+\w+\s+(?:DROP|ADD)\s+(?:FOREIGN\s+KEY|CONSTRAINT)\s+\w+/i,
-  /^ALTER\s+TABLE\s+\w+\s+DROP\s+(?:INDEX|KEY)\s+\w+/i
+  /^ALTER\s+TABLE\s+\w+\s+DROP\s+(?:INDEX|KEY)\s+\w+/i,
+  /^ALTER\s+TABLE\s+\w+\s+ADD\s+COLUMN/i
 ];
-
 export function toSqliteStatements(sql) {
   return splitByLine(sql).flatMap((statement) => {
+    // 注释先摘掉再判断，否则以 "--" 开头的注释行会把后面的 ALTER 藏住。
+    statement = statement.replace(/^\s*--.*$/gm, "").trim();
     if (MYSQL_ONLY_ALTER.some((pattern) => pattern.test(statement))) return [];
     // ALTER TABLE ... ADD COLUMN / ADD UNIQUE KEY 照样交给 SQLite，去重由 runMigrationStatement 负责。
-    if (/^ALTER\s+TABLE/i.test(statement)) return [statement.replace(/\n\s*--.*$/gm, "")];
+    if (/^ALTER\s+TABLE/i.test(statement)) return [statement];
     if (isCommentOnly(statement)) return [];
     const tables = /^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/i.exec(statement);
     if (!tables) return [statement.trim()];
@@ -172,7 +224,7 @@ export function toSqliteStatements(sql) {
     const supported = lines.map((line) => {
       const uniqueKey = UNIQUE_KEY.exec(line);
       if (uniqueKey) {
-        unique.push(`CREATE UNIQUE INDEX IF NOT EXISTS ${uniqueKey[1]} ON ${tables[1]} (${uniqueKey[2]});`);
+        unique.push(`CREATE UNIQUE INDEX IF NOT EXISTS ${uniqueKey[1]} ON ${tables[1]} ${stripPrefixes(uniqueKey[2])};`);
         return null;
       }
       const column = GENERATED_COLUMN.exec(line);
@@ -191,12 +243,18 @@ export function toSqliteStatements(sql) {
           `  BEGIN UPDATE ${tables[1]} SET ${name} = (${expression}) WHERE rowid = NEW.rowid; END;`
       )
     );
-    return [tidyDanglingComma(kept.join("\n").replace(/\n\s*\n/g, "\n")).trim(), ...unique, ...triggers];
+    // 唯一键写成独立索引，必须等 CREATE TABLE 建好表再建，所以排在表后面。
+    return [tidyDanglingComma(kept.join("\n").replace(/\n\s*\n/g, "\n")).trim(), ...triggers, ...unique];
   });
 }
 
 function tidyDanglingComma(text) {
   return text.replace(/,(\s*\n\s*\))/g, "$1");
+}
+
+// SQLite 的索引不接受列前缀长度 (hot_list_url(255))，去掉后整列比较：比 MySQL 更严，不会放过重复。
+function stripPrefixes(columns) {
+  return columns.replace(/\(\s*\d+\s*\)/g, "");
 }
 
 // 先认表头和 VALUES，再在 VALUES 之后找 ON DUPLICATE KEY UPDATE：值列表里出现 "UPDATE" 这类词也不会认错。
@@ -459,9 +517,13 @@ function toMySqlStatements(sql) {
 }
 
 const ADD_COLUMN = /^ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)/i;
+const ADD_KEY_HEAD = /^ALTER\s+TABLE\s+(\w+)\s+ADD\s+(?:UNIQUE\s+)?(?:KEY|INDEX)\s+(\w+)/i;
+// 单列唯一键（含前缀长度）：建之前先查重复值。
+const UNIQUE_SINGLE_COLUMN = /^ALTER\s+TABLE\s+(\w+)\s+ADD\s+UNIQUE\s+(?:KEY|INDEX)\s+(\w+)\s*\(\s*(\w+)\s*(?:\(\s*\d+\s*\))?\s*\)/i;
 // MySQL 的 "ADD [UNIQUE] KEY 名字 (...)" 在 SQLite 里写成独立建索引；建语句本身已带 IF NOT EXISTS。
-const ADD_KEY = /^ALTER\s+TABLE\s+(\w+)\s+ADD\s+(UNIQUE\s+)?(?:KEY|INDEX)\s+(\w+)\s*(\([^()]*\))/i;
+const ADD_KEY = new RegExp(String.raw`^ALTER\s+TABLE\s+(\w+)\s+ADD\s+(UNIQUE\s+)?(?:KEY|INDEX)\s+(\w+)\s*(${KEY_COLUMNS})`, "i");
 const DROP_INDEX = /^ALTER\s+TABLE\s+(\w+)\s+DROP\s+(?:INDEX|KEY)\s+(\w+)/i;
+const DROP_COLUMN = /^ALTER\s+TABLE\s+(\w+)\s+DROP\s+COLUMN\s+(\w+)/i;
 const MODIFY_COLUMN = /^ALTER\s+TABLE\s+\w+\s+MODIFY\s+COLUMN/i;
 
 // 索引存在与否两种方言都能查。
@@ -472,17 +534,44 @@ async function indexExists(db, table, name) {
   return rows.length > 0;
 }
 
+async function columnNames(db, table) {
+  const rows = db.driver === "mysql"
+    ? await all(db, "SELECT column_name AS name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ?", [table])
+    : await all(db, "SELECT name FROM pragma_table_info(?)", [table]);
+  return rows.map((row) => row.name);
+}
+
+// 唯一索引只建在单列上时，先看这一列已有数据有没有重复：有就建不起来，直接抛出要改的数据。
+// 带前缀长度的键只比较前 N 个字符，跟真正建出来的索引口径一致。
+async function duplicateValues(db, table, column, statement) {
+  const prefix = new RegExp(String.raw`\(\s*(\d+)\s*\)`).exec(statement);
+  const key = db.driver === "mysql" && prefix ? `LEFT(${column}, ${prefix[1]})` : column;
+  const rows = await all(db, `SELECT ${column} AS value FROM ${table} GROUP BY ${key} HAVING COUNT(*) > 1`);
+  return rows.map((row) => row.value);
+}
+
 // 新库的 001 已经把列和索引建好了，旧库才需要补；MySQL 没有 ADD COLUMN / CREATE INDEX / DROP INDEX
 // 的 IF [NOT] EXISTS，改成「先查，缺了才加、有了才删」，重复执行也不报错。
-async function runMigrationStatement(db, statement) {
+export async function runMigrationStatement(db, statement) {
   // 001 建表时已经用新定义写好生成列，MODIFY 只为旧库准备，SQLite 没有等价写法。
   if (MODIFY_COLUMN.test(statement)) return db.driver === "mysql" ? run(db, statement) : null;
-  const key = ADD_KEY.exec(statement);
-  if (key) {
-    const [, table, unique, name, columns] = key;
+  const keyHead = ADD_KEY_HEAD.exec(statement);
+  if (keyHead) {
+    const [, table, name] = keyHead;
     if (await indexExists(db, table, name)) return null;
+    const key = ADD_KEY.exec(statement);
+    // 多列或带表达式的键交给 SQLite 原样执行，冲突由数据库报。
+    if (!key) return run(db, statement);
+    const [, , unique, , columns] = key;
+    const single = UNIQUE_SINGLE_COLUMN.exec(statement);
+    if (unique && single) {
+      const clashes = await duplicateValues(db, table, single[3], statement);
+      if (clashes.length > 0) {
+        throw new Error(`无法给 ${table} 建唯一索引 ${name}：${single[3]} 有重复值 ${clashes.join(", ")}，请先处理数据`);
+      }
+    }
     const kind = unique ? " UNIQUE" : "";
-    return run(db, `CREATE${kind} INDEX${db.driver === "mysql" ? "" : " IF NOT EXISTS"} ${name} ON ${table} ${columns}`);
+    return run(db, `CREATE${kind} INDEX${db.driver === "mysql" ? "" : " IF NOT EXISTS"} ${name} ON ${table} ${stripPrefixes(columns)}`);
   }
   const dropped = DROP_INDEX.exec(statement);
   if (dropped) {
@@ -490,13 +579,17 @@ async function runMigrationStatement(db, statement) {
     if (!(await indexExists(db, table, name))) return null;
     return run(db, db.driver === "mysql" ? `ALTER TABLE ${table} DROP INDEX ${name}` : `DROP INDEX ${name}`);
   }
+  // DROP COLUMN 没有 IF EXISTS：MySQL 和 SQLite 都先查列还在不在。
+  const droppedColumn = DROP_COLUMN.exec(statement);
+  if (droppedColumn) {
+    const [, table, column] = droppedColumn;
+    if (!(await columnNames(db, table)).includes(column)) return null;
+    return run(db, statement);
+  }
   const added = ADD_COLUMN.exec(statement);
   if (!added) return run(db, statement);
   const [, table, column] = added;
-  const rows = db.driver === "mysql"
-    ? await all(db, "SELECT column_name AS name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ?", [table])
-    : await all(db, "SELECT name FROM pragma_table_info(?)", [table]);
-  if (rows.some((row) => row.name === column)) return null;
+  if ((await columnNames(db, table)).includes(column)) return null;
   return run(db, statement);
 }
 

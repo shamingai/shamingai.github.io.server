@@ -1,6 +1,6 @@
 import { all, get } from "../db.js";
 import { badRequest, notFound } from "../errors.js";
-import { CATALOG_KEYS, catalogOfSlug, dateOfSlug, listCatalogs, readCatalog } from "./catalog.js";
+import { ALL_CATALOG, ALL_LABEL, CATALOG_KEYS, catalogLabel, catalogOfSlug, dateOfSlug, listCatalogs, readCatalogFilter } from "./catalog.js";
 
 const DEFAULT_PAGE_SIZE = 10;
 const MAX_PAGE_SIZE = 100;
@@ -301,7 +301,22 @@ async function digestRows(db, slugs) {
   return new Map(rows.map((row) => [row.slug, row]));
 }
 
-function digestItem(row, record) {
+// 列表页每期只露一条头条：名次第 1 的那条，带摘要，点进去看整期。
+// 站点名从 source_sites 取；站点被删掉后名字为空，页面照样能显示。
+async function headlineRows(db, slugs) {
+  if (!slugs.length) return new Map();
+  const placeholders = slugs.map(() => "?").join(", ");
+  const rows = await all(
+    db,
+    `SELECT p.slug, p.title, COALESCE(s.name, '') AS site_name, p.summary
+       FROM picked_items p LEFT JOIN source_sites s ON s.id = p.site_id
+      WHERE p.rank_no = 1 AND p.slug IN (${placeholders})`,
+    slugs
+  );
+  return new Map(rows.map((row) => [row.slug, row]));
+}
+
+function digestItem(row, record, headline = null) {
   return {
     date: row.published_on,
     slug: row.slug,
@@ -309,7 +324,8 @@ function digestItem(row, record) {
     catalog: record?.catalog ?? catalogOfSlug(row.slug),
     item_count: record?.item_count ?? null,
     status: record?.status ?? "synced",
-    generated_at: record?.generated_at ?? null
+    generated_at: record?.generated_at ?? null,
+    headline: headline ? { title: headline.title, site_name: headline.site_name, summary: headline.summary } : null
   };
 }
 
@@ -320,15 +336,18 @@ export function listDigestCatalogs() {
 
 export async function listDigests(db, query = {}) {
   const { page, pageSize } = paging(query);
-  const catalog = readCatalog(query.catalog);
-  if (!catalog) throw badRequest("invalid_catalog", `catalog 只能是 ${CATALOG_KEYS.join("、")}`);
-  // 同步进来的旧资讯只有 daily-日期 这种 slug，统一按 hot 算。
-  const rows = (await orderedRows(db, "digest")).filter((row) => catalogOfSlug(row.slug) === catalog);
+  const catalog = readCatalogFilter(query.catalog);
+  if (!catalog) throw badRequest("invalid_catalog", `catalog 只能是 ${[ALL_CATALOG, ...CATALOG_KEYS].join("、")}`);
+  // 同步进来的旧资讯只有 daily-日期 这种 slug，统一按 hot 算。选「全部」时不分品类。
+  const rows = (await orderedRows(db, "digest")).filter((row) => catalog === ALL_CATALOG || catalogOfSlug(row.slug) === catalog);
   const slice = rows.slice((page - 1) * pageSize, page * pageSize);
   const records = await digestRows(db, slice.map((row) => row.slug));
+  const headlines = await headlineRows(db, slice.map((row) => row.slug));
   return {
-    items: slice.map((row) => digestItem(row, records.get(row.slug))),
+    items: slice.map((row) => digestItem(row, records.get(row.slug), headlines.get(row.slug))),
+    // 列表标题用：选「全部」时就是「每日资讯」。
     catalog,
+    catalog_label: catalog === ALL_CATALOG ? ALL_LABEL : catalogLabel(catalog),
     total: rows.length,
     page,
     page_size: pageSize,
@@ -351,9 +370,10 @@ export async function getDigest(db, key) {
   const [summary] = await all(db, "SELECT summary FROM articles WHERE slug = ?", [article.slug]);
   const items = await all(
     db,
-    `SELECT rank_no, url, title, site_id, site_name, site_rank, mention_count, summary, reason, published_at
-       FROM picked_items WHERE digest_date = ? AND slug = ? ORDER BY rank_no`,
-    [article.published_on, article.slug]
+    `SELECT p.rank_no, p.url, p.title, p.site_id, COALESCE(s.name, '') AS site_name, p.site_rank, p.mention_count, p.summary, p.reason, p.published_at
+       FROM picked_items p LEFT JOIN source_sites s ON s.id = p.site_id
+      WHERE p.slug = ? ORDER BY p.rank_no`,
+    [article.slug]
   );
   return {
     ...digestItem(article, record),

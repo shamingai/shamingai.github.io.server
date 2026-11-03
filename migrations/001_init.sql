@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS source_sites (
   enabled TINYINT NOT NULL DEFAULT 1,
   created_at VARCHAR(32) NOT NULL,
   updated_at VARCHAR(32) NOT NULL,
+  -- 同一个热榜接口只归一个站点，否则同一批消息会被算两次；hot_list_url 是 TEXT，按前 255 个字比较。
+  UNIQUE KEY source_sites_hot_list_url (hot_list_url(255)),
   CONSTRAINT source_sites_enabled CHECK (enabled IN (0, 1))
 );
 
@@ -84,18 +86,32 @@ CREATE TABLE IF NOT EXISTS picked_items (
   url TEXT NOT NULL,
   title TEXT NOT NULL,
   site_id VARCHAR(64) NOT NULL,
-  site_name VARCHAR(120) NOT NULL,
   site_rank INT NOT NULL,
   mention_count INT NOT NULL DEFAULT 1,
   summary TEXT NOT NULL,
   reason TEXT NOT NULL,
   published_at VARCHAR(32) NULL,
-  -- 条目归属的那一期资讯，按 slug 挂外键；digest_date 只是按天分组用的日期。
-  digest_date VARCHAR(10) NOT NULL,
   url_key VARCHAR(700) AS (LEFT(url, 700)) STORED,
   PRIMARY KEY (slug, rank_no),
   UNIQUE KEY picked_items_url (slug, url_key),
   CONSTRAINT picked_items_digest FOREIGN KEY (slug) REFERENCES digests (slug) ON DELETE CASCADE
+);
+
+-- 一条条目被哪些站点同时选中：site_id / site_rank 是与 picked_items 代表来源并列的其他来源，
+-- 代表来源的 url / title / published_at 在 picked_items 里。site_id 不挂外键：删站点时历史提及原样保留，
+-- 名字显示为空，下次抓到同一篇再补回来。
+CREATE TABLE IF NOT EXISTS picked_item_mentions (
+  slug VARCHAR(64) NOT NULL,
+  rank_no INT NOT NULL,
+  site_id VARCHAR(64) NOT NULL,
+  site_rank INT NOT NULL,
+  url TEXT NOT NULL,
+  title TEXT NOT NULL,
+  excerpt TEXT NULL,
+  published_at VARCHAR(32) NULL,
+  PRIMARY KEY (slug, rank_no, site_id),
+  KEY picked_item_mentions_site (site_id),
+  CONSTRAINT picked_item_mentions_item FOREIGN KEY (slug, rank_no) REFERENCES picked_items (slug, rank_no) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS runs (

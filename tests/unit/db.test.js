@@ -1,17 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { all, openDatabase, run } from "../../src/db.js";
+import { all, openDatabase, run, runMigrationStatement, splitStatements, toSqliteStatements } from "../../src/db.js";
 import { createTestDatabase } from "../helpers.js";
 
 test("migrations create the expected tables and drop the retired ones", async () => {
   const db = await createTestDatabase();
   const names = (await all(db, "SELECT name FROM sqlite_master WHERE type = 'table'")).map((row) => row.name);
-  for (const table of ["source_sites", "articles", "article_tags", "headings", "digests", "picked_items", "runs", "site_meta"]) {
+  for (const table of ["source_sites", "articles", "article_tags", "headings", "digests", "picked_items", "picked_item_mentions", "runs", "site_meta"]) {
     assert.ok(names.includes(table), `${table} exists`);
   }
   for (const table of ["rejections", "candidates"]) {
@@ -31,6 +31,50 @@ test("digest articles may share a date but each slug is one row", async () => {
   await insert("daily-a-tech");
   assert.equal((await all(db, "SELECT slug FROM articles WHERE kind = 'digest' ORDER BY slug")).length, 2);
   await assert.rejects(insert("daily-a"), /UNIQUE|duplicate/i);
+});
+
+test("unique keys with a column prefix become a plain unique index on SQLite", async () => {
+  const [create, index] = toSqliteStatements(`CREATE TABLE sites (
+  id VARCHAR(64) NOT NULL,
+  hot_list_url TEXT NOT NULL,
+  UNIQUE KEY sites_url (hot_list_url(255))
+);`);
+  const db = await createTestDatabase();
+  await run(db, create);
+  await run(db, index);
+  await run(db, "INSERT INTO sites (id, hot_list_url) VALUES ('a', 'https://x.test/hot')");
+  await assert.rejects(run(db, "INSERT INTO sites (id, hot_list_url) VALUES ('b', 'https://x.test/hot')"), /UNIQUE/);
+});
+
+test("adding a unique key reports duplicate values instead of failing inside the database", async () => {
+  const db = await createTestDatabase();
+  await run(db, "CREATE TABLE sites (id VARCHAR(64) NOT NULL, hot_list_url TEXT NOT NULL)");
+  await run(db, "INSERT INTO sites (id, hot_list_url) VALUES ('a', 'https://x.test/hot'), ('b', 'https://x.test/hot'), ('c', 'https://y.test/hot')");
+  await assert.rejects(
+    runMigrationStatement(db, "ALTER TABLE sites ADD UNIQUE KEY sites_url (hot_list_url(255));"),
+    /sites_url.*hot_list_url 有重复值 https:\/\/x\.test\/hot/
+  );
+});
+
+test("MySQL migrations never read the table they are updating in a subquery", async () => {
+  const dir = fileURLToPath(new URL("../../migrations/mysql/", import.meta.url));
+  const files = (await readdir(dir)).filter((name) => name.endsWith(".sql"));
+  assert.ok(files.length > 0, "migrations found");
+  for (const name of files) {
+    for (const statement of splitStatements(await readFile(path.join(dir, name), "utf8"))) {
+      const sql = statement.replace(/--[^\n]*/g, " ");
+      const match = /^(?:UPDATE|DELETE\s+FROM)\s+`?(\w+)`?/i.exec(sql);
+      if (!match) continue;
+      const table = match[1];
+      for (const sub of sql.matchAll(/\(\s*SELECT\b[\s\S]*?\)/gi)) {
+        const reads = new RegExp(`\\b(?:FROM|JOIN)\\s+\`?${table}\`?\\b`, "i").test(sub[0]);
+        assert.ok(
+          !reads,
+          `${name}: ${table} 的子查询不能直接读自己（MySQL 报 You can't specify target table），改成先写临时清单表：${statement.slice(0, 80)}`
+        );
+      }
+    }
+  }
 });
 
 test("openDatabase opens an SQLite file and reports its driver", async () => {

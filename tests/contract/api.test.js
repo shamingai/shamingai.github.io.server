@@ -22,15 +22,23 @@ async function digestFixture() {
     "INSERT INTO digests (digest_date, slug, title, item_count, note, status, generated_at, markdown_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     ["2026-10-18", "daily-2026-10-18", "2026-10-18 资讯", 2, null, "generated", now, "blog/content/posts/daily-2026-10-18.md"]
   );
+  await seedSites(db, SITES);
   await run(
     db,
-    `INSERT INTO picked_items (digest_date, slug, rank_no, url, title, site_id, site_name, site_rank, mention_count, summary, reason, published_at)
-    VALUES ('2026-10-18', 'daily-2026-10-18', 1, 'https://alpha.test/1', '甲站首条', 'alpha', '甲站', 1, 2, '摘要一', '理由一', '2026-10-18T00:00:00.000Z')`
+    `INSERT INTO picked_items (slug, rank_no, url, title, site_id, site_rank, mention_count, summary, reason, published_at)
+    VALUES ('daily-2026-10-18', 1, 'https://alpha.test/1', '甲站首条', 'alpha', 1, 2, '摘要一', '理由一', '2026-10-18T00:00:00.000Z')`
   );
   await run(
     db,
-    `INSERT INTO picked_items (digest_date, slug, rank_no, url, title, site_id, site_name, site_rank, mention_count, summary, reason, published_at)
-    VALUES ('2026-10-18', 'daily-2026-10-18', 2, 'https://beta.test/2', '乙站第二条', 'beta', '乙站', 2, 1, '摘要二', '理由二', '2026-10-18T01:00:00.000Z')`
+    `INSERT INTO picked_items (slug, rank_no, url, title, site_id, site_rank, mention_count, summary, reason, published_at)
+    VALUES ('daily-2026-10-18', 2, 'https://beta.test/2', '乙站第二条', 'beta', 2, 1, '摘要二', '理由二', '2026-10-18T01:00:00.000Z')`
+  );
+  await run(
+    db,
+    `INSERT INTO picked_item_mentions (slug, rank_no, site_id, site_rank, url, title, excerpt, published_at)
+    VALUES ('daily-2026-10-18', 1, 'alpha', 1, 'https://alpha.test/1', '甲站首条', NULL, '2026-10-18T00:00:00.000Z'),
+           ('daily-2026-10-18', 1, 'beta', 3, 'https://beta.test/1', '乙站首条', NULL, '2026-10-18T00:00:00.000Z'),
+           ('daily-2026-10-18', 2, 'beta', 2, 'https://beta.test/2', '乙站第二条', NULL, '2026-10-18T01:00:00.000Z')`
   );
   await insertArticle(db, {
     slug: "daily-2026-10-18",
@@ -197,7 +205,8 @@ test("GET /api/digests lists digests newest first and GET /api/digests/:date ret
       title: "2026-10-18 资讯",
       item_count: 2,
       status: "generated",
-      generated_at: list.items[0].generated_at
+      generated_at: list.items[0].generated_at,
+      headline: { title: "甲站首条", site_name: "甲站", summary: "摘要一" }
     }
   ]);
 
@@ -213,6 +222,14 @@ test("GET /api/digests lists digests newest first and GET /api/digests/:date ret
   assert.deepEqual(Object.keys(detail.items[0]), [
     "rank", "url", "title", "site_id", "site_name", "site_rank", "mention_count", "summary", "reason", "published_at"
   ]);
+  assert.deepEqual(detail.items.map((item) => [item.site_id, item.site_name]), [
+    ["alpha", "甲站"],
+    ["beta", "乙站"]
+  ]);
+  assert.equal(
+    (await get(db, "SELECT COUNT(*) AS n FROM picked_item_mentions WHERE slug = 'daily-2026-10-18' AND rank_no = 1")).n,
+    2
+  );
 
   const missing = await app.inject({ method: "GET", url: "/api/digests/1999-01-01" });
   assert.equal(missing.statusCode, 404);
@@ -339,6 +356,24 @@ test("POST/PATCH/DELETE /api/source-sites runs the full admin lifecycle", async 
   assert.equal(duplicate.statusCode, 409);
   assert.equal(duplicate.json().error.code, "site_exists");
 
+  const sharedUrl = await app.inject({
+    method: "POST",
+    url: "/api/source-sites",
+    headers: auth,
+    payload: { id: "delta", name: "丁站", home_url: "https://delta.test/", hot_list_url: "https://gamma.test/hot", adapter: "links" }
+  });
+  assert.equal(sharedUrl.statusCode, 409);
+  assert.equal(sharedUrl.json().error.code, "site_url_exists");
+
+  const movedUrl = await app.inject({
+    method: "PATCH",
+    url: "/api/source-sites/gamma",
+    headers: auth,
+    payload: { hot_list_url: "https://alpha.test/hot" }
+  });
+  assert.equal(movedUrl.statusCode, 409);
+  assert.equal(movedUrl.json().error.code, "site_url_exists");
+
   const invalidAdapter = await app.inject({
     method: "POST",
     url: "/api/source-sites",
@@ -358,6 +393,15 @@ test("POST/PATCH/DELETE /api/source-sites runs the full admin lifecycle", async 
   assert.equal(patched.json().enabled, false);
   assert.equal(patched.json().weight, 3);
   assert.equal(patched.json().home_url, "https://gamma.test/");
+
+  const keptUrl = await app.inject({
+    method: "PATCH",
+    url: "/api/source-sites/gamma",
+    headers: auth,
+    payload: { hot_list_url: "https://gamma.test/hot", name: "丙站改名" }
+  });
+  assert.equal(keptUrl.statusCode, 200);
+  assert.equal(keptUrl.json().name, "丙站改名");
 
   const patchedMissing = await app.inject({ method: "PATCH", url: "/api/source-sites/nope", headers: auth, payload: { weight: 2 } });
   assert.equal(patchedMissing.statusCode, 404);

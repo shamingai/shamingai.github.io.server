@@ -76,7 +76,7 @@ export async function digestExists(db, slug) {
 }
 
 // 一期资讯 = 日期 + 品类。slug 里带着品类（daily-日期 / daily-日期-tech），同一天的两期靠它区分；
-// picked_items 仍按 digest_date 挂在外键上，所以条目记录同时带上 slug。
+// picked_items 按 slug 挂在外键上，一条条目一行，被哪些站点选中另记在 picked_item_mentions。
 export async function generateDigest(db, config, { deps: overrides, ...options }) {
   const { date = todayInShanghai(), regenerate = false, dryRun = false, kind = "manual", now = new Date() } = options;
   const catalog = readCatalog(options.catalog);
@@ -192,7 +192,7 @@ export async function generateDigest(db, config, { deps: overrides, ...options }
     const note = picked.length < size ? `本次只收录 ${picked.length} 条：${describeShortfall(report)}。` : null;
     const regenerated = await digestExists(db, slug);
     const summary = digestSummary(picked, { label });
-    const title = digestTitle(date, { label, regenerated });
+    const title = digestTitle(date, { label });
     const body = renderDigestBody({ items: picked, note, regenerated });
     const status = regenerated ? "replaced" : "generated";
     if (dryRun) {
@@ -226,16 +226,14 @@ export async function generateDigest(db, config, { deps: overrides, ...options }
       for (const [index, item] of picked.entries()) {
         await run(
           tx,
-          `INSERT INTO picked_items (digest_date, slug, rank_no, url, title, site_id, site_name, site_rank, mention_count, summary, reason, published_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO picked_items (slug, rank_no, url, title, site_id, site_rank, mention_count, summary, reason, published_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            date,
             slug,
             index + 1,
             item.url,
             limitText(item.title, 120),
             item.siteId,
-            item.siteName,
             item.siteRank,
             item.mentionCount,
             item.summary,
@@ -243,6 +241,28 @@ export async function generateDigest(db, config, { deps: overrides, ...options }
             item.publishedAt
           ]
         );
+        // 同一站点在一次合并里可能连着报了两条同 URL 的候选，按 site_id 去重后再写明细。
+        const mentions = new Map();
+        for (const source of item.sources ?? []) {
+          if (!mentions.has(source.siteId)) mentions.set(source.siteId, source);
+        }
+        for (const source of mentions.values()) {
+          await run(
+            tx,
+            `INSERT INTO picked_item_mentions (slug, rank_no, site_id, site_rank, url, title, excerpt, published_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              slug,
+              index + 1,
+              source.siteId,
+              source.siteRank,
+              limitText(source.url, 700),
+              limitText(source.title, 500),
+              source.excerpt ? limitText(source.excerpt, 500) : null,
+              source.publishedAt ?? null
+            ]
+          );
+        }
       }
     });
     await finishRun(db, runId, { siteResults: report.site_results, dropped: report.dropped, outcome: "created" });

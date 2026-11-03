@@ -10,9 +10,8 @@ ALTER TABLE source_sites ADD COLUMN audience VARCHAR(16) NOT NULL DEFAULT 'hot';
 ALTER TABLE digests ADD COLUMN catalog VARCHAR(16) NOT NULL DEFAULT 'hot';
 
 -- 条目归属到具体一期（同一天可能有 hot 和 tech 两期）。旧条目都来自 hot 那一期，按日期回填。
+-- 旧条目按 digest_date 回填 slug：只对以日期为主键的旧库有意义，新库建表时就有 slug，写在 migrations/mysql/002_digest_from_db.sql。
 ALTER TABLE picked_items ADD COLUMN slug VARCHAR(64) NOT NULL DEFAULT '';
-
-UPDATE picked_items SET slug = CONCAT('daily-', digest_date) WHERE slug = '';
 
 -- articles 原来限制一天只能有一篇资讯；改成按品类分多期后，资讯靠 slug 主键区分，这个唯一约束去掉。
 ALTER TABLE articles DROP INDEX articles_digest_date;

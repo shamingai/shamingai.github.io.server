@@ -1,4 +1,4 @@
-import { catalogLabel } from "./catalog.js";
+import { catalogLabel, dailyLabel, withDailyPrefix } from "./catalog.js";
 
 export const DIGEST_TAG = "资讯";
 export const DIGEST_CATEGORY = "资讯";
@@ -7,8 +7,8 @@ export function digestSlug(date, key = "") {
   return key ? `daily-${date}-${key}` : `daily-${date}`;
 }
 
-export function digestTitle(date, { regenerated = false, label = catalogLabel() } = {}) {
-  return `${date} 每日${label}${regenerated ? "（更新）" : ""}`;
+export function digestTitle(date, { label = dailyLabel() } = {}) {
+  return `${date} ${withDailyPrefix(label)}`;
 }
 
 function quote(value) {
@@ -24,7 +24,10 @@ export function renderDigestBody({ items, note, regenerated = false }) {
   items.forEach((item, index) => {
     const rank = index + 1;
     lines.push(`## ${rank}. ${quote(item.title)}`, "");
-    lines.push(`- 来源：${item.siteName} 第 ${item.siteRank} 名${item.mentionCount > 1 ? `，共 ${item.mentionCount} 个站点提及` : ""}`);
+    // 同一篇的其他来源记在 picked_item_mentions 里，这里按提及顺序点出来。
+    const others = (item.sources ?? []).filter((source) => source.siteId !== item.siteId).map((source) => source.siteName);
+    const also = others.length ? `；另见 ${others.join("、")}` : "";
+    lines.push(`- 来源：${item.siteName} 第 ${item.siteRank} 名${item.mentionCount > 1 ? `，共 ${item.mentionCount} 个站点提及${also}` : ""}`);
     if (item.publishedAt) lines.push(`- 时间：${item.publishedAt}`);
     lines.push(`- 链接：[原文](${item.url})`, "");
     lines.push(`**摘要**：${item.summary}`, "");
