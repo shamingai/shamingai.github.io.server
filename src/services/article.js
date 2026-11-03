@@ -1,5 +1,6 @@
 import { all, get } from "../db.js";
 import { badRequest, notFound } from "../errors.js";
+import { catalogOfSlug, dateOfSlug, readCatalog } from "./catalog.js";
 
 const DEFAULT_PAGE_SIZE = 10;
 const MAX_PAGE_SIZE = 100;
@@ -291,28 +292,38 @@ export async function listHistory(db) {
 }
 
 // 资讯列表的唯一数据源是 articles（kind='digest'），和首页 /api/posts 一致。
-// digests 表只保存抓取明细（条目数、状态），由生成流程或 sync 补建。
+// digests 表只保存抓取明细（条目数、状态、品类），由生成流程或 sync 补建；
 // 从 Markdown 同步进 articles 的资讯没有 digests 行，若列表改回读 digests 就会出现“首页有、资讯页没有”。
-async function digestRow(db, date) {
-  // digests 表只补充抓取明细（条目数、状态、生成时间）。资讯以 articles 为准，
-  // 从 Markdown 同步进来、没走过生成流程的日期在这里查不到记录，按“已同步”处理。
-  return get(db, "SELECT item_count, status, note, generated_at FROM digests WHERE digest_date = ?", [date]);
+async function digestRows(db, slugs) {
+  if (!slugs.length) return new Map();
+  const placeholders = slugs.map(() => "?").join(", ");
+  const rows = await all(db, `SELECT slug, item_count, status, note, generated_at, catalog FROM digests WHERE slug IN (${placeholders})`, slugs);
+  return new Map(rows.map((row) => [row.slug, row]));
 }
 
-export async function listDigests(db, query) {
-  const { page, pageSize } = paging(query);
-  const rows = await orderedRows(db, "digest");
-  const slice = rows.slice((page - 1) * pageSize, page * pageSize);
-  const records = await Promise.all(slice.map((row) => digestRow(db, row.published_on)));
+function digestItem(row, record) {
   return {
-    items: slice.map((row, index) => ({
-      date: row.published_on,
-      slug: row.slug,
-      title: row.title,
-      item_count: records[index]?.item_count ?? null,
-      status: records[index]?.status ?? "synced",
-      generated_at: records[index]?.generated_at ?? null
-    })),
+    date: row.published_on,
+    slug: row.slug,
+    title: row.title,
+    catalog: record?.catalog ?? catalogOfSlug(row.slug),
+    item_count: record?.item_count ?? null,
+    status: record?.status ?? "synced",
+    generated_at: record?.generated_at ?? null
+  };
+}
+
+export async function listDigests(db, query = {}) {
+  const { page, pageSize } = paging(query);
+  const catalog = readCatalog(query.catalog);
+  if (!catalog) throw badRequest("invalid_catalog", "catalog 只能是 hot 或 tech");
+  // 同步进来的旧资讯只有 daily-日期 这种 slug，统一按 hot 算。
+  const rows = (await orderedRows(db, "digest")).filter((row) => catalogOfSlug(row.slug) === catalog);
+  const slice = rows.slice((page - 1) * pageSize, page * pageSize);
+  const records = await digestRows(db, slice.map((row) => row.slug));
+  return {
+    items: slice.map((row) => digestItem(row, records.get(row.slug))),
+    catalog,
     total: rows.length,
     page,
     page_size: pageSize,
@@ -320,37 +331,29 @@ export async function listDigests(db, query) {
   };
 }
 
-export async function getDigest(db, date) {
-  const article = await get(
-    db,
-    "SELECT slug, title, published_on FROM articles WHERE kind = 'digest' AND published_on = ? ORDER BY slug DESC LIMIT 1",
-    [date]
-  );
-  if (!article) throw notFound("digest_not_found", "这一天没有资讯博客");
-  const record = await digestRow(db, article.published_on);
-  const row = {
-    digest_date: article.published_on,
-    slug: article.slug,
-    title: article.title,
-    item_count: record?.item_count ?? null,
-    note: record?.note ?? null,
-    status: record?.status ?? "synced",
-    generated_at: record?.generated_at ?? null
-  };
+// key 可以是资讯 slug（daily-日期[-品类]），也可以是日期：日期取当天默认的 hot 品类。
+export async function getDigest(db, key) {
+  const bySlug = dateOfSlug(key);
+  const article = bySlug
+    ? await get(db, "SELECT slug, title, published_on FROM articles WHERE kind = 'digest' AND slug = ?", [key])
+    : await get(
+        db,
+        "SELECT slug, title, published_on FROM articles WHERE kind = 'digest' AND published_on = ? ORDER BY slug ASC LIMIT 1",
+        [key]
+      );
+  if (!article) throw notFound("digest_not_found", "没有这一篇资讯博客");
+  const record = (await digestRows(db, [article.slug])).get(article.slug);
+  const [summary] = await all(db, "SELECT summary FROM articles WHERE slug = ?", [article.slug]);
   const items = await all(
     db,
     `SELECT rank_no, url, title, site_id, site_name, site_rank, mention_count, summary, reason, published_at
-       FROM picked_items WHERE digest_date = ? ORDER BY rank_no`,
-    [date]
+       FROM picked_items WHERE digest_date = ? AND slug = ? ORDER BY rank_no`,
+    [article.published_on, article.slug]
   );
   return {
-    date: row.digest_date,
-    slug: row.slug,
-    title: row.title,
-    item_count: row.item_count,
-    note: row.note,
-    status: row.status,
-    generated_at: row.generated_at,
+    ...digestItem(article, record),
+    summary: summary?.summary ?? null,
+    note: record?.note ?? null,
     items: items.map(({ rank_no, ...item }) => ({ rank: rank_no, ...item }))
   };
 }

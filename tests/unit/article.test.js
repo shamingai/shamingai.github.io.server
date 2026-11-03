@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createTestDatabase, insertArticle } from "../helpers.js";
-import { digestQuota, interleaveByDate, listPosts } from "../../src/services/article.js";
+import { digestQuota, getDigest, interleaveByDate, listPosts } from "../../src/services/article.js";
 
 function row(slug, publishedOn, kind = "post") {
   return { slug, kind, published_on: publishedOn };
@@ -141,4 +141,14 @@ test("listPosts filters by kind and rejects unknown kinds", async () => {
     assert.equal(error.code, "invalid_kind");
     return true;
   });
+});
+
+test("getDigest by date returns the hot digest when a tech one exists the same day", async () => {
+  const db = await createTestDatabase();
+  await insertArticle(db, { slug: "daily-2026-11-03", kind: "digest", title: "热榜", publishedOn: "2026-11-03" });
+  await insertArticle(db, { slug: "daily-2026-11-03-tech", kind: "digest", title: "技术", publishedOn: "2026-11-03" });
+
+  assert.equal((await getDigest(db, "2026-11-03")).slug, "daily-2026-11-03");
+  assert.equal((await getDigest(db, "daily-2026-11-03-tech")).slug, "daily-2026-11-03-tech");
+  assert.equal((await getDigest(db, "daily-2026-11-03-tech")).catalog, "tech");
 });

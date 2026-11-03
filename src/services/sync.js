@@ -1,6 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { all, get, run, transaction } from "../db.js";
+import { catalogOfSlug } from "./catalog.js";
 
 const DIGEST_PREFIX = "daily-";
 
@@ -231,8 +232,8 @@ export async function syncContent(db, siteRepoDir, now = new Date().toISOString(
       if (await get(db, "SELECT 1 AS found FROM digests WHERE slug = ?", [slug])) continue;
       await run(
         db,
-        "INSERT INTO digests (digest_date, slug, title, item_count, note, status, generated_at) VALUES (?, ?, ?, ?, ?, 'generated', ?)",
-        [digest.date, slug, digest.title, digest.itemCount, null, now]
+        "INSERT INTO digests (digest_date, slug, title, item_count, note, status, generated_at, catalog) VALUES (?, ?, ?, ?, ?, 'generated', ?, ?)",
+        [digest.date, slug, digest.title, digest.itemCount, null, now, catalogOfSlug(slug)]
       );
     }
 

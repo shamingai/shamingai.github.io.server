@@ -17,9 +17,10 @@ function openSqlite(file) {
   const dir = path.dirname(file);
   if (dir && dir !== ".") mkdirSync(dir, { recursive: true });
   const db = new DatabaseSync(file);
-  // MySQL 的 IF()/LEFT() 只出现在生成列表达式里；SQLite 回退时补同名函数。
+  // MySQL 的 IF()/LEFT()/CONCAT() 只出现在迁移与生成列表达式里；SQLite 回退时补同名函数。
   db.function("IF", { deterministic: true }, (cond, yes, no) => (cond ? yes : no));
   db.function("LEFT", { deterministic: true }, (text, length) => String(text ?? "").slice(0, Number(length)));
+  db.function("CONCAT", { varargs: true, deterministic: true }, (...parts) => parts.filter((part) => part !== null && part !== undefined).join(""));
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA busy_timeout = 5000");
@@ -126,10 +127,10 @@ export async function migrate(db) {
   for (const name of files) {
     if (applied.has(name)) continue;
     const sql = readFileSync(path.join(MIGRATIONS_DIR, name), "utf8");
-    const statements = db.driver === "mysql" ? splitStatements(sql) : toSqliteStatements(sql);
+    const statements = db.driver === "mysql" ? toMySqlStatements(sql) : toSqliteStatements(sql);
     try {
       await transaction(db, async (scoped) => {
-        for (const statement of statements) await run(scoped, statement);
+        for (const statement of statements) await runMigrationStatement(scoped, statement);
         await run(scoped, "INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)", [name, new Date().toISOString()]);
       });
     } catch (error) {
@@ -149,10 +150,20 @@ const GENERATED_COLUMN = /^\s*(\w+)\s+([\w()]+)\s+AS\s*\((.*)\)\s*STORED\s*,?\s*
 
 // 迁移按 MySQL 8 写一份；SQLite 回退时抹掉它不认识的内联索引，唯一键改写成独立索引，
 // 生成列降级为普通列并用触发器赋值，再收拾因此留下的多余逗号与空行。
+// 这类 ALTER 在 SQLite 上没有对应写法（001 的建表语句已经是最终形态），退到 SQLite 时直接跳过。
+const MYSQL_ONLY_ALTER = [
+  /^ALTER\s+TABLE\s+\w+\s+MODIFY\s+COLUMN/i,
+  /^ALTER\s+TABLE\s+\w+\s+(?:DROP|ADD)\s+PRIMARY\s+KEY/i,
+  /^ALTER\s+TABLE\s+\w+\s+(?:DROP|ADD)\s+(?:FOREIGN\s+KEY|CONSTRAINT)\s+\w+/i,
+  /^ALTER\s+TABLE\s+\w+\s+DROP\s+(?:INDEX|KEY)\s+\w+/i
+];
+
 export function toSqliteStatements(sql) {
-  return splitStatements(sql).flatMap((statement) => {
-    // 迁移文件里写 MySQL 的 ALTER TABLE ... MODIFY，退到 SQLite 时这类语句没有等价写法（001 建表时列已经允许空），直接跳过。
-    if (/^\s*ALTER\s+TABLE\s+\w+\s+MODIFY\s+COLUMN/i.test(statement.replace(/^\s*--.*$/gm, "").trimStart())) return [];
+  return splitByLine(sql).flatMap((statement) => {
+    if (MYSQL_ONLY_ALTER.some((pattern) => pattern.test(statement))) return [];
+    // ALTER TABLE ... ADD COLUMN / ADD UNIQUE KEY 照样交给 SQLite，去重由 runMigrationStatement 负责。
+    if (/^ALTER\s+TABLE/i.test(statement)) return [statement.replace(/\n\s*--.*$/gm, "")];
+    if (isCommentOnly(statement)) return [];
     const tables = /^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/i.exec(statement);
     if (!tables) return [statement.trim()];
     const lines = statement.split("\n");
@@ -419,6 +430,74 @@ export function toSqliteDialect(sql, params) {
     values = ordered;
   }
   return [text, values];
+}
+
+// 按分号切分，但只认行尾的分号：注释里出现的 ";" 不切开。
+// 以 "--" 开头的行是独立注释，先摘出去单独成句，剩下的 SQL 里不会残留注释。
+function splitByLine(sql) {
+  const comments = [];
+  const body = String(sql)
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => {
+      if (!line.trim().startsWith("--")) return line;
+      comments.push(line.trim());
+      return "";
+    })
+    .join("\n");
+  return [...body.split(/;\s*(?=\n|$)/), ...comments].map((statement) => statement.trim()).filter(Boolean);
+}
+
+function isCommentOnly(statement) {
+  return String(statement)
+    .split("\n")
+    .every((line) => !line.trim() || line.trim().startsWith("--"));
+}
+
+function toMySqlStatements(sql) {
+  return splitByLine(sql).filter((statement) => !isCommentOnly(statement));
+}
+
+const ADD_COLUMN = /^ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)/i;
+// MySQL 的 "ADD [UNIQUE] KEY 名字 (...)" 在 SQLite 里写成独立建索引；建语句本身已带 IF NOT EXISTS。
+const ADD_KEY = /^ALTER\s+TABLE\s+(\w+)\s+ADD\s+(UNIQUE\s+)?(?:KEY|INDEX)\s+(\w+)\s*(\([^()]*\))/i;
+const DROP_INDEX = /^ALTER\s+TABLE\s+(\w+)\s+DROP\s+(?:INDEX|KEY)\s+(\w+)/i;
+const MODIFY_COLUMN = /^ALTER\s+TABLE\s+\w+\s+MODIFY\s+COLUMN/i;
+
+// 索引存在与否两种方言都能查。
+async function indexExists(db, table, name) {
+  const rows = db.driver === "mysql"
+    ? await all(db, "SELECT 1 FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?", [table, name])
+    : await all(db, "SELECT 1 FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND name = ?", [table, name]);
+  return rows.length > 0;
+}
+
+// 新库的 001 已经把列和索引建好了，旧库才需要补；MySQL 没有 ADD COLUMN / CREATE INDEX / DROP INDEX
+// 的 IF [NOT] EXISTS，改成「先查，缺了才加、有了才删」，重复执行也不报错。
+async function runMigrationStatement(db, statement) {
+  // 001 建表时已经用新定义写好生成列，MODIFY 只为旧库准备，SQLite 没有等价写法。
+  if (MODIFY_COLUMN.test(statement)) return db.driver === "mysql" ? run(db, statement) : null;
+  const key = ADD_KEY.exec(statement);
+  if (key) {
+    const [, table, unique, name, columns] = key;
+    if (await indexExists(db, table, name)) return null;
+    const kind = unique ? " UNIQUE" : "";
+    return run(db, `CREATE${kind} INDEX${db.driver === "mysql" ? "" : " IF NOT EXISTS"} ${name} ON ${table} ${columns}`);
+  }
+  const dropped = DROP_INDEX.exec(statement);
+  if (dropped) {
+    const [, table, name] = dropped;
+    if (!(await indexExists(db, table, name))) return null;
+    return run(db, db.driver === "mysql" ? `ALTER TABLE ${table} DROP INDEX ${name}` : `DROP INDEX ${name}`);
+  }
+  const added = ADD_COLUMN.exec(statement);
+  if (!added) return run(db, statement);
+  const [, table, column] = added;
+  const rows = db.driver === "mysql"
+    ? await all(db, "SELECT column_name AS name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ?", [table])
+    : await all(db, "SELECT name FROM pragma_table_info(?)", [table]);
+  if (rows.some((row) => row.name === column)) return null;
+  return run(db, statement);
 }
 
 export function splitStatements(sql) {

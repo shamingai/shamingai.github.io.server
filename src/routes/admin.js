@@ -1,6 +1,7 @@
 import { all, get, run } from "../db.js";
 import { ApiError, badRequest, conflict, notFound } from "../errors.js";
 import { adapterKeys } from "../sources/index.js";
+import { readCatalog } from "../services/catalog.js";
 import { todayInShanghai } from "../services/sync.js";
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -15,6 +16,7 @@ export function toSite(row) {
     adapter: row.adapter,
     weight: Number(row.weight),
     max_candidates: Number(row.max_candidates),
+    audience: row.audience ?? "hot",
     enabled: Boolean(row.enabled),
     created_at: row.created_at,
     updated_at: row.updated_at
@@ -53,6 +55,8 @@ function writeSite(db, body, existing = {}) {
     throw badRequest("invalid_site", "max_candidates 必须是 1 到 100 的整数");
   }
   const enabled = body.enabled === undefined ? (existing.enabled ?? 1) : body.enabled ? 1 : 0;
+  const audience = readCatalog(body.audience ?? existing.audience, "hot");
+  if (!audience) throw badRequest("invalid_site", "audience 只能是 hot 或 tech");
   return {
     id,
     name,
@@ -64,6 +68,7 @@ function writeSite(db, body, existing = {}) {
     adapter,
     weight,
     max_candidates: maxCandidates,
+    audience,
     enabled
   };
 }
@@ -104,9 +109,21 @@ export async function adminRoutes(app, { db, config, deps }) {
     const now = new Date().toISOString();
     await run(
       db,
-      `INSERT INTO source_sites (id, name, home_url, hot_list_url, adapter, weight, max_candidates, enabled, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [site.id, site.name, site.home_url, site.hot_list_url, site.adapter, site.weight, site.max_candidates, site.enabled, now, now]
+      `INSERT INTO source_sites (id, name, home_url, hot_list_url, adapter, weight, max_candidates, audience, enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        site.id,
+        site.name,
+        site.home_url,
+        site.hot_list_url,
+        site.adapter,
+        site.weight,
+        site.max_candidates,
+        site.audience,
+        site.enabled,
+        now,
+        now
+      ]
     );
     return reply.code(201).send(toSite(await readSite(db, site.id)));
   });
@@ -136,11 +153,12 @@ export async function adminRoutes(app, { db, config, deps }) {
     if (!DATE.test(date) || Number.isNaN(Date.parse(`${date}T00:00:00Z`))) {
       throw badRequest("invalid_date", "date 必须是 YYYY-MM-DD");
     }
-    const result = await deps.generate({ date, regenerate: Boolean(body.regenerate), kind: "manual" });
+    const result = await deps.generate({ date, regenerate: Boolean(body.regenerate), catalog: body.catalog ?? "hot", kind: "manual" });
     return reply.code(result.status === "replaced" ? 200 : 201).send({
       run_id: result.run_id,
       date: result.date,
       slug: result.slug,
+      catalog: result.catalog,
       item_count: result.item_count,
       note: result.note,
       status: result.status,

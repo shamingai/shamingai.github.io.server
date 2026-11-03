@@ -108,6 +108,48 @@ test("generateDigest refuses a duplicate date without regenerate", async () => {
   assert.equal(skipped.outcome, "skipped_existing");
 });
 
+test("generateDigest keeps hot and tech digests apart on the same day", async () => {
+  const sites = [
+    { ...SITES[0], audience: "hot" },
+    { ...SITES[1], audience: "tech" }
+  ];
+  const { db, config, deps } = await fixture({ sites });
+  const collected = deps.collect;
+  const seen = [];
+  deps.collect = async (sites, options) => {
+    seen.push(sites.map((site) => site.id));
+    return (await collected()).filter((row) => sites.some((site) => site.id === row.site_id));
+  };
+  const hot = await generateDigest(db, config, { date: "2026-10-18", deps });
+  const tech = await generateDigest(db, config, { date: "2026-10-18", catalog: "tech", deps });
+
+  assert.deepEqual(seen, [["alpha"], ["beta"]], "每个品类只采集自己的站点");
+  assert.deepEqual(tech.site_results.map((row) => row.site_id), ["beta"]);
+
+  assert.equal(hot.slug, "daily-2026-10-18");
+  assert.equal(tech.slug, "daily-2026-10-18-tech");
+  assert.equal(tech.item_count, 3);
+  assert.equal((await get(db, "SELECT title FROM articles WHERE slug = ?", [tech.slug])).title, "2026-10-18 每日热门技术资讯");
+  assert.deepEqual(
+    (await all(db, "SELECT slug, catalog FROM digests ORDER BY slug")).map((row) => ({ ...row })),
+    [
+      { slug: "daily-2026-10-18", catalog: "hot" },
+      { slug: "daily-2026-10-18-tech", catalog: "tech" }
+    ]
+  );
+  assert.equal((await get(db, "SELECT COUNT(*) AS n FROM picked_items WHERE slug = ?", [tech.slug])).n, 3);
+  assert.deepEqual(
+    (await all(db, "SELECT DISTINCT site_id FROM picked_items WHERE slug = ?", [tech.slug])).map((row) => row.site_id),
+    ["beta"]
+  );
+  await expectGenerateError(generateDigest(db, config, { date: "2026-10-18", catalog: "tech", deps }), 409, "duplicate_date");
+});
+
+test("generateDigest rejects an unknown catalog", async () => {
+  const { db, config, deps } = await fixture();
+  await expectGenerateError(generateDigest(db, config, { date: "2026-10-18", catalog: "sports", deps }), 400, "invalid_catalog");
+});
+
 test("generateDigest with regenerate replaces the existing digest", async () => {
   const { db, config, deps } = await fixture();
   await generateDigest(db, config, { date: "2026-10-18", deps });

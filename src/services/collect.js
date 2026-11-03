@@ -1,6 +1,6 @@
 import * as cheerio from "cheerio";
 import { all } from "../db.js";
-import { adapterOf } from "../sources/index.js";
+import { adapterOf, postBodyOf } from "../sources/index.js";
 
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
@@ -40,8 +40,15 @@ export async function collectSite(site, options = {}) {
   let lastError = "";
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
+      const postBody = postBodyOf(site.adapter);
       const response = await fetchImpl(site.hot_list_url, {
-        headers: { "User-Agent": USER_AGENT, Accept: "text/html,application/json;q=0.9,*/*;q=0.8" },
+        method: postBody ? "POST" : "GET",
+        headers: {
+          "User-Agent": USER_AGENT,
+          Accept: "text/html,application/json;q=0.9,*/*;q=0.8",
+          ...(postBody ? { "Content-Type": "application/json" } : {})
+        },
+        ...(postBody ? { body: JSON.stringify(postBody) } : {}),
         redirect: "follow",
         signal: AbortSignal.timeout(options.timeoutMs ?? 15000)
       });
@@ -81,9 +88,11 @@ export async function collectAll(sites, options = {}) {
   return results;
 }
 
-export function enabledSites(db) {
+// 只取属于某个品类的站点：hot 用全部热门来源，tech 只取技术站。
+export function enabledSites(db, audience = "hot") {
   return all(
     db,
-    "SELECT id, name, home_url, hot_list_url, adapter, weight, max_candidates FROM source_sites WHERE enabled = 1 ORDER BY id"
+    "SELECT id, name, home_url, hot_list_url, adapter, weight, max_candidates FROM source_sites WHERE enabled = 1 AND audience = ? ORDER BY id",
+    [audience]
   ).then((rows) => rows.map((row) => ({ ...row, weight: Number(row.weight), max_candidates: Number(row.max_candidates) })));
 }

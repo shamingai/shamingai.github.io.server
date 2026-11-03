@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS source_sites (
   adapter VARCHAR(64) NOT NULL,
   weight DOUBLE NOT NULL DEFAULT 1,
   max_candidates INT NOT NULL DEFAULT 20,
+  -- 来源站点进哪个资讯品类：hot = 每日热门前十资讯，tech = 每日热门技术资讯。
+  audience VARCHAR(16) NOT NULL DEFAULT 'hot',
   enabled TINYINT NOT NULL DEFAULT 1,
   created_at VARCHAR(32) NOT NULL,
   updated_at VARCHAR(32) NOT NULL,
@@ -26,7 +28,6 @@ CREATE TABLE IF NOT EXISTS articles (
   digest_date VARCHAR(10) AS (IF(kind = 'digest', published_on, NULL)) STORED,
   updated_at VARCHAR(32) NOT NULL,
   CONSTRAINT articles_kind CHECK (kind IN ('post', 'digest')),
-  UNIQUE KEY articles_digest_date (digest_date),
   KEY articles_published (published_on, title(64))
 );
 
@@ -62,20 +63,23 @@ CREATE TABLE IF NOT EXISTS history_entries (
 );
 
 CREATE TABLE IF NOT EXISTS digests (
-  digest_date VARCHAR(10) NOT NULL PRIMARY KEY,
-  slug VARCHAR(191) NOT NULL,
+  slug VARCHAR(64) NOT NULL PRIMARY KEY,
+  digest_date VARCHAR(10) NOT NULL,
   title TEXT NOT NULL,
   item_count INT NOT NULL,
   note TEXT NULL,
   status VARCHAR(16) NOT NULL,
   generated_at VARCHAR(32) NOT NULL,
   markdown_path TEXT NULL,
-  UNIQUE KEY digests_slug (slug),
+  -- 资讯品类：hot = 每日热门前十资讯，tech = 每日热门技术资讯。一天可以有多个品类，digest_date 只记日期。
+  catalog VARCHAR(16) NOT NULL DEFAULT 'hot',
+  KEY digests_date (digest_date),
   CONSTRAINT digests_status CHECK (status IN ('generated', 'replaced', 'failed'))
 );
 
 CREATE TABLE IF NOT EXISTS picked_items (
-  digest_date VARCHAR(10) NOT NULL,
+  -- 一期资讯的 slug 形如 daily-2026-11-03-tech，64 字足够；配合 url_key 建唯一索引也不会超长。
+  slug VARCHAR(64) NOT NULL,
   rank_no INT NOT NULL,
   url TEXT NOT NULL,
   title TEXT NOT NULL,
@@ -86,10 +90,12 @@ CREATE TABLE IF NOT EXISTS picked_items (
   summary TEXT NOT NULL,
   reason TEXT NOT NULL,
   published_at VARCHAR(32) NULL,
+  -- 条目归属的那一期资讯，按 slug 挂外键；digest_date 只是按天分组用的日期。
+  digest_date VARCHAR(10) NOT NULL,
   url_key VARCHAR(700) AS (LEFT(url, 700)) STORED,
-  PRIMARY KEY (digest_date, rank_no),
-  UNIQUE KEY picked_items_url (digest_date, url_key),
-  CONSTRAINT picked_items_digest FOREIGN KEY (digest_date) REFERENCES digests (digest_date) ON DELETE CASCADE
+  PRIMARY KEY (slug, rank_no),
+  UNIQUE KEY picked_items_url (slug, url_key),
+  CONSTRAINT picked_items_digest FOREIGN KEY (slug) REFERENCES digests (slug) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS runs (

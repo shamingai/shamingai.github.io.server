@@ -19,7 +19,7 @@ test("migrations create the expected tables and drop the retired ones", async ()
   }
 });
 
-test("one digest article per date", async () => {
+test("digest articles may share a date but each slug is one row", async () => {
   const db = await createTestDatabase();
   const insert = (slug) =>
     run(
@@ -28,7 +28,9 @@ test("one digest article per date", async () => {
       [slug, slug, "2026-10-18"]
     );
   await insert("daily-a");
-  await assert.rejects(insert("daily-b"), /UNIQUE|duplicate/i);
+  await insert("daily-a-tech");
+  assert.equal((await all(db, "SELECT slug FROM articles WHERE kind = 'digest' ORDER BY slug")).length, 2);
+  await assert.rejects(insert("daily-a"), /UNIQUE|duplicate/i);
 });
 
 test("openDatabase opens an SQLite file and reports its driver", async () => {

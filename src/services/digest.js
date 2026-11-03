@@ -4,6 +4,7 @@ import { collectAll, enabledSites } from "./collect.js";
 import { filterReachable } from "./link-check.js";
 import { mergeCandidates } from "./rank.js";
 import { headingsOf, todayInShanghai } from "./sync.js";
+import { catalogLabel, readCatalog } from "./catalog.js";
 import { DIGEST_CATEGORY, DIGEST_TAG, digestSlug, digestSummary, digestTitle, renderDigestBody } from "./render.js";
 
 export class GenerateError extends Error {
@@ -70,25 +71,32 @@ export async function getRun(db, runId) {
   };
 }
 
-export async function digestExists(db, date) {
-  return Boolean(await get(db, "SELECT 1 AS found FROM digests WHERE digest_date = ?", [date]));
+export async function digestExists(db, slug) {
+  return Boolean(await get(db, "SELECT 1 AS found FROM digests WHERE slug = ?", [slug]));
 }
 
+// 一期资讯 = 日期 + 品类。slug 里带着品类（daily-日期 / daily-日期-tech），同一天的两期靠它区分；
+// picked_items 仍按 digest_date 挂在外键上，所以条目记录同时带上 slug。
 export async function generateDigest(db, config, { deps: overrides, ...options }) {
   const { date = todayInShanghai(), regenerate = false, dryRun = false, kind = "manual", now = new Date() } = options;
+  const catalog = readCatalog(options.catalog);
+  if (!catalog) throw new GenerateError(400, "invalid_catalog", "catalog 只能是 hot 或 tech");
+  const key = catalog === "hot" ? "" : catalog;
+  const label = catalogLabel(catalog);
+  const slug = digestSlug(date, key);
   const deps = { ...defaultDeps(config), ...(overrides ?? {}) };
   const startedAt = now.toISOString();
   const runId = await startRun(db, regenerate ? "regenerate" : kind, startedAt);
   const report = { site_results: [], dropped: [] };
 
   try {
-    if ((await digestExists(db, date)) && !regenerate) {
+    if ((await digestExists(db, slug)) && !regenerate) {
       await finishRun(db, runId, { siteResults: report.site_results, dropped: report.dropped, outcome: "skipped_existing" });
-      throw new GenerateError(409, "duplicate_date", `${date} 已有资讯博客；如需替换请传 regenerate: true`, { run_id: runId });
+      throw new GenerateError(409, "duplicate_date", `${date} 已有「${label}」；如需替换请传 regenerate: true`, { run_id: runId });
     }
-    const sites = await enabledSites(db);
+    const sites = await enabledSites(db, catalog);
     if (!sites.length) {
-      throw new GenerateError(422, "insufficient_content", "站点清单为空，未启用任何来源站点", { run_id: runId });
+      throw new GenerateError(422, "insufficient_content", `「${label}」没有启用任何来源站点`, { run_id: runId });
     }
 
     const weights = new Map(sites.map((site) => [site.id, site.weight]));
@@ -150,10 +158,9 @@ export async function generateDigest(db, config, { deps: overrides, ...options }
     }
 
     const note = picked.length < size ? `本次只收录 ${picked.length} 条：${describeShortfall(report)}。` : null;
-    const regenerated = await digestExists(db, date);
-    const slug = digestSlug(date);
-    const summary = digestSummary(picked);
-    const title = digestTitle(date);
+    const regenerated = await digestExists(db, slug);
+    const summary = digestSummary(picked, { label });
+    const title = digestTitle(date, { label, regenerated });
     const body = renderDigestBody({ items: picked, note, regenerated });
     const status = regenerated ? "replaced" : "generated";
     if (dryRun) {
@@ -162,6 +169,7 @@ export async function generateDigest(db, config, { deps: overrides, ...options }
         run_id: runId,
         date,
         slug,
+        catalog,
         item_count: picked.length,
         note,
         status,
@@ -174,22 +182,23 @@ export async function generateDigest(db, config, { deps: overrides, ...options }
 
     const updatedAt = new Date().toISOString();
     await transaction(db, async (tx) => {
-      await upsertDigestArticle(tx, { date, title, summary, body, updatedAt });
-      await run(tx, "DELETE FROM picked_items WHERE digest_date = ?", [date]);
-      await run(tx, "DELETE FROM digests WHERE digest_date = ?", [date]);
+      await upsertDigestArticle(tx, { date, slug, title, summary, body, updatedAt });
+      await run(tx, "DELETE FROM picked_items WHERE slug = ?", [slug]);
+      await run(tx, "DELETE FROM digests WHERE slug = ?", [slug]);
       await run(
         tx,
-        `INSERT INTO digests (digest_date, slug, title, item_count, note, status, generated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [date, slug, title, picked.length, note, status, updatedAt]
+        `INSERT INTO digests (digest_date, slug, title, item_count, note, status, generated_at, catalog)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [date, slug, title, picked.length, note, status, updatedAt, catalog]
       );
       for (const [index, item] of picked.entries()) {
         await run(
           tx,
-          `INSERT INTO picked_items (digest_date, rank_no, url, title, site_id, site_name, site_rank, mention_count, summary, reason, published_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO picked_items (digest_date, slug, rank_no, url, title, site_id, site_name, site_rank, mention_count, summary, reason, published_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             date,
+            slug,
             index + 1,
             item.url,
             limitText(item.title, 120),
@@ -209,6 +218,7 @@ export async function generateDigest(db, config, { deps: overrides, ...options }
       run_id: runId,
       date,
       slug,
+      catalog,
       item_count: picked.length,
       note,
       status,
@@ -222,8 +232,7 @@ export async function generateDigest(db, config, { deps: overrides, ...options }
   }
 }
 
-export async function upsertDigestArticle(db, { date, title, summary, body, updatedAt }) {
-  const slug = digestSlug(date);
+export async function upsertDigestArticle(db, { date, slug, title, summary, body, updatedAt }) {
   const words = String(body ?? "").replace(/\s+/g, "").length;
   await run(
     db,

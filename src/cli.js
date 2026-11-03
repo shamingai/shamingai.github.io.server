@@ -9,9 +9,10 @@ const USAGE = `用法：node src/cli.js <命令> [选项]
 命令：
   migrate                 应用迁移并播种默认来源站点
   sync                    从 SITE_REPO_DIR 的内容仓库导入文章
-  generate [--date 日期] [--regenerate] [--dry-run]
-                          生成指定日期的资讯博客（默认上海时间今天）
-                          --dry-run 只预览：不写数据库，也不写文件
+  generate [--date 日期] [--catalog hot|tech] [--regenerate] [--dry-run]
+                          生成指定日期、品类的资讯（默认上海时间今天，品类 hot）
+                          tech 为「每日热门技术资讯」，同一天可与 hot 并存
+                          --dry-run 只预览：不写数据库
   serve                   启动 HTTP 服务
   run <run_id>            查看一次运行报告
 
@@ -73,6 +74,7 @@ async function main() {
           date,
           regenerate: Boolean(options.regenerate),
           dryRun: Boolean(options.dryRun),
+          catalog: options.catalog ?? "hot",
           kind: "manual"
         });
         if (options.dryRun) {

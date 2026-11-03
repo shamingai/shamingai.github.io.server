@@ -24,13 +24,13 @@ async function digestFixture() {
   );
   await run(
     db,
-    `INSERT INTO picked_items (digest_date, rank_no, url, title, site_id, site_name, site_rank, mention_count, summary, reason, published_at)
-    VALUES ('2026-10-18', 1, 'https://alpha.test/1', '甲站首条', 'alpha', '甲站', 1, 2, '摘要一', '理由一', '2026-10-18T00:00:00.000Z')`
+    `INSERT INTO picked_items (digest_date, slug, rank_no, url, title, site_id, site_name, site_rank, mention_count, summary, reason, published_at)
+    VALUES ('2026-10-18', 'daily-2026-10-18', 1, 'https://alpha.test/1', '甲站首条', 'alpha', '甲站', 1, 2, '摘要一', '理由一', '2026-10-18T00:00:00.000Z')`
   );
   await run(
     db,
-    `INSERT INTO picked_items (digest_date, rank_no, url, title, site_id, site_name, site_rank, mention_count, summary, reason, published_at)
-    VALUES ('2026-10-18', 2, 'https://beta.test/2', '乙站第二条', 'beta', '乙站', 2, 1, '摘要二', '理由二', '2026-10-18T01:00:00.000Z')`
+    `INSERT INTO picked_items (digest_date, slug, rank_no, url, title, site_id, site_name, site_rank, mention_count, summary, reason, published_at)
+    VALUES ('2026-10-18', 'daily-2026-10-18', 2, 'https://beta.test/2', '乙站第二条', 'beta', '乙站', 2, 1, '摘要二', '理由二', '2026-10-18T01:00:00.000Z')`
   );
   await insertArticle(db, {
     slug: "daily-2026-10-18",
@@ -193,6 +193,7 @@ test("GET /api/digests lists digests newest first and GET /api/digests/:date ret
     {
       date: "2026-10-18",
       slug: "daily-2026-10-18",
+      catalog: "hot",
       title: "2026-10-18 资讯",
       item_count: 2,
       status: "generated",
@@ -274,7 +275,7 @@ test("GET /api/source-sites is public and maps rows to the documented shape", as
   assert.equal(items[0].enabled, true);
   assert.equal(items[1].weight, 2);
   assert.deepEqual(Object.keys(items[0]), [
-    "id", "name", "home_url", "hot_list_url", "adapter", "weight", "max_candidates", "enabled", "created_at", "updated_at"
+    "id", "name", "home_url", "hot_list_url", "adapter", "weight", "max_candidates", "audience", "enabled", "created_at", "updated_at"
   ]);
   await app.close();
 });
